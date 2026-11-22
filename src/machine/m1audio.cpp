@@ -181,13 +181,15 @@ void m1audio::run(double usec, std::vector<int16_t> &out)
 			m_pcm_buf.r.push_back(0.5f * (m_music * r1[i] + m_effects * r2[i]));
 		}
 	}
-	for (int i = 0; i < nym; i++) {
-		ymfm::ym3438::output_data o;
-		m_ym->chip.generate(&o);
-		m_ym->advance(int64_t(YM_HZ / ym_rate));
-		// MAME's route: 0.30
-		m_ym_buf.l.push_back(0.30f * m_music * o.data[0]);
-		m_ym_buf.r.push_back(0.30f * m_music * o.data[1]);
+	if (m_fm_enabled) {
+		for (int i = 0; i < nym; i++) {
+			ymfm::ym3438::output_data o;
+			m_ym->chip.generate(&o);
+			m_ym->advance(int64_t(YM_HZ / ym_rate));
+			// MAME's route: 0.30
+			m_ym_buf.l.push_back(0.30f * m_music * o.data[0]);
+			m_ym_buf.r.push_back(0.30f * m_music * o.data[1]);
+		}
 	}
 
 	// resample both to OUT_RATE (linear) and mix

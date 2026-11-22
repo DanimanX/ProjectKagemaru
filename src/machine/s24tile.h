@@ -285,26 +285,105 @@ private:
 		int dst_x = xx1;            // MAME takes the destination before the group shift
 		mask += yy1 * 4;
 		while (xx1 >= 128) { xx1 -= 128; xx2 -= 128; mask++; }
+		if (m_coord) {
+			for (int y = 0; y < yy2 - yy1; y++) {
+				int dy = yy1 + y;
+				if (dy >= dm.height()) break;
+				const uint16_t *src = &pix[l][size_t((sy + y) & 511) * 512 + sx];
+				const uint8_t *srct = &flags[l][size_t((sy + y) & 511) * 512 + sx];
+				uint32_t *dst = &dm.pix(dy, dst_x + m_ox);
+				uint32_t *crd = m_coord + size_t(dy) * dm.width() + dst_x + m_ox;
+				const uint16_t *mask1 = mask + y * 4;
+				int llx = xx2, cur_x = xx1;
+				while (llx > 0) {
+					uint16_t m = *mask1++;
+					if (win) m = ~m;
+					int llx1 = llx >= 128 ? 128 : llx;
+					for (int x = cur_x; x < llx1; x++) {
+						if ((*srct == tpri || (fl & DRAW_OPAQUE)) && !(m & (0x8000 >> (x >> 3)))) {
+							*dst = m_pens[*src & 0x1fff];
+							*crd = uint32_t(l) << 18 | uint32_t(src - pix[l].data());
+						}
+						src++; srct++; dst++; crd++;
+					}
+					llx -= 128;
+					cur_x = 0;
+				}
+			}
+			return;
+		}
+		const uint32_t *const pens = m_pens;
+		const bool opaque = (fl & DRAW_OPAQUE) != 0;
+		const uint8_t want = uint8_t(tpri);
+		const uint64_t tpri8 = uint64_t(want) * 0x0101010101010101ULL;
 		for (int y = 0; y < yy2 - yy1; y++) {
 			int dy = yy1 + y;
 			if (dy >= dm.height()) break;
 			const uint16_t *src = &pix[l][size_t((sy + y) & 511) * 512 + sx];
 			const uint8_t *srct = &flags[l][size_t((sy + y) & 511) * 512 + sx];
 			uint32_t *dst = &dm.pix(dy, dst_x + m_ox);
-			uint32_t *crd = m_coord ? m_coord + size_t(dy) * dm.width() + dst_x + m_ox : nullptr;
 			const uint16_t *mask1 = mask + y * 4;
 			int llx = xx2, cur_x = xx1;
 			while (llx > 0) {
 				uint16_t m = *mask1++;
 				if (win) m = ~m;
-				int llx1 = llx >= 128 ? 128 : llx;
-				for (int x = cur_x; x < llx1; x++) {
-					if ((*srct == tpri || (fl & DRAW_OPAQUE)) && !(m & (0x8000 >> (x >> 3)))) {
-						*dst = m_pens[*src & 0x1fff];
-						if (crd) *crd = uint32_t(l) << 18 | uint32_t(src - pix[l].data());
+				const int llx1 = llx >= 128 ? 128 : llx;
+				const int count = llx1 - cur_x;
+				if (m == 0xffff) {
+					src += count; srct += count; dst += count;
+					llx -= 128; cur_x = 0;
+					continue;
+				}
+				if (m == 0x0000) {
+					if (opaque) {
+						for (int i = 0; i < count; ++i) dst[i] = pens[src[i] & 0x1fff];
+					} else {
+						int i = 0;
+						for (; i + 8 <= count; i += 8) {
+							uint64_t f8;
+							std::memcpy(&f8, srct + i, 8);
+							if (f8 == 0) continue;
+							const uint64_t x8 = f8 ^ tpri8;
+							if (((x8 - 0x0101010101010101ULL) & ~x8 & 0x8080808080808080ULL) == 0) continue;
+							for (int k = 0; k < 8; ++k) {
+								if (srct[i + k] == want) dst[i + k] = pens[src[i + k] & 0x1fff];
+							}
+						}
+						for (; i < count; ++i) {
+							if (srct[i] == want) dst[i] = pens[src[i] & 0x1fff];
+						}
 					}
-					src++; srct++; dst++;
-					if (crd) crd++;
+					src += count; srct += count; dst += count;
+				} else {
+					int x = cur_x;
+					while (x < llx1) {
+						const int tile_end = std::min(llx1, (x & ~7) + 8);
+						const int step = tile_end - x;
+						if (m & (0x8000 >> (x >> 3))) {
+							src += step; srct += step; dst += step;
+						} else if (opaque) {
+							for (int i = 0; i < step; ++i) dst[i] = pens[src[i] & 0x1fff];
+							src += step; srct += step; dst += step;
+						} else if (step == 8) {
+							uint64_t f8;
+							std::memcpy(&f8, srct, 8);
+							if (f8 != 0) {
+								const uint64_t x8 = f8 ^ tpri8;
+								if (((x8 - 0x0101010101010101ULL) & ~x8 & 0x8080808080808080ULL) != 0) {
+									for (int k = 0; k < 8; ++k) {
+										if (srct[k] == want) dst[k] = pens[src[k] & 0x1fff];
+									}
+								}
+							}
+							src += 8; srct += 8; dst += 8;
+						} else {
+							for (int i = 0; i < step; ++i) {
+								if (srct[i] == want) dst[i] = pens[src[i] & 0x1fff];
+							}
+							src += step; srct += step; dst += step;
+						}
+						x = tile_end;
+					}
 				}
 				llx -= 128;
 				cur_x = 0;

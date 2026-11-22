@@ -2,6 +2,10 @@
 #pragma once
 #ifdef __APPLE__
 #include <pthread.h>
+#elif defined(__linux__)
+#include <pthread.h>
+#include <sched.h>
+#include <unistd.h>
 #endif
 #include <algorithm>
 #include <cstdlib>
@@ -76,11 +80,26 @@ private:
 	row_pool()
 	{
 		int n = std::clamp(int(std::thread::hardware_concurrency()) - 2, 0, 7);   // the CPU and sound keep theirs
-		if (const char *t = getenv("VF_THREADS")) n = std::clamp(atoi(t) - 1, 0, 63);   // testing: this many drawing threads in all
+		if (const char *t = getenv("VF1_THREADS") ? getenv("VF1_THREADS") : getenv("VF_THREADS"))
+			n = std::clamp(atoi(t) - 1, 0, 63);   // testing: this many drawing threads in all
 		for (int i = 0; i < n; i++)
-			m_workers.emplace_back([this] {
+			m_workers.emplace_back([this, i] {
 #ifdef __APPLE__
 				pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);   // (the drawing on the performance cores)
+#elif defined(__linux__) && !defined(__ANDROID__)
+				const char *wc = getenv("VF1_WORKER_CORE") ? getenv("VF1_WORKER_CORE") : getenv("VF_WORKER_CORE");
+				if (wc) {
+					const int cores = int(sysconf(_SC_NPROCESSORS_ONLN));
+					const int base = atoi(wc);
+					if (cores > 1 && base >= 0) {
+						cpu_set_t set;
+						CPU_ZERO(&set);
+						CPU_SET((base + i) % cores, &set);
+						pthread_setaffinity_np(pthread_self(), sizeof(set), &set);
+					}
+				}
+#else
+				(void)i;
 #endif
 				unsigned seen = 0;
 				for (;;) {

@@ -22,6 +22,7 @@ struct model1::tgp_lle : mb86233_bus
 	tgp_lle(model1 &mm, const std::vector<uint8_t> &rom) : m(mm), prog(0x800), copro_ram(0x2000)
 	{
 		memcpy(prog.data(), rom.data(), std::min(rom.size(), size_t(0x2000)));
+		cpu.set_fast_mem(prog.data(), 0x7ff, ram0, ram1);
 	}
 
 	void reset()
@@ -256,7 +257,10 @@ template <class IO> void model1::lle_state(IO &io)
 	io.deq(t.fifo_in);
 	io.deq(t.fifo_out);
 	t.cpu.state(io);
-	if constexpr (IO::loading) t.runaway = false;   // (a state loaded: running, as it was saved)
+	if constexpr (IO::loading) {
+		t.runaway = false;   // (a state loaded: running, as it was saved)
+		t.cpu.mark_prog_dirty();
+	}
 }
 template void model1::lle_state(m1::StateWriter &);
 template void model1::lle_state(m1::StateReader &);

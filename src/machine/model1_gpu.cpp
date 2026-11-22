@@ -28,7 +28,7 @@ int model1::render_parts(double now, gpu_parts &p, bool shown)
 	p.d3_edge = false;
 	for (auto &i : p.img) i.px = nullptr;
 	m_last_parts = nullptr;
-	if (!m_smooth || (m_scale == 1 && m_ext == 0)) return render_smooth(now, shown) ? 2 : 0;   // (1x 4:3: the arcade's own)
+	if (!m_smooth || (!m_external_gpu && m_scale == 1 && m_ext == 0)) return render_smooth(now, shown) ? 2 : 0;   // (1x 4:3: the arcade's own)
 	m_parts = &p;
 	m_parts_whole = false;
 	const bool drew = render_smooth(now, shown);
@@ -70,6 +70,18 @@ bool model1::frame_blank() const
 void model1::parts_begin(bitmap_rgb32 &bitmap)
 {
 	const int w = bitmap.width(), h = bitmap.height();
+	if (m_external_gpu && gpu3d_on()) {
+		m_parts->d3_all = false;
+		m_d3_y0 = 1 << 30;
+		m_d3_y1 = -1;
+		m_parts->img[TEX_3D] = { nullptr, w, h, size_t(w), 0 };
+		gpu_op fill;
+		fill.colour = m_pens[0];
+		fill.dw = float(w);
+		fill.dh = float(h);
+		m_parts->ops.push_back(fill);
+		return;
+	}
 	if (m_bitmap_whole || int(m_span.size()) != h) {
 		parallel_rows(h, [&](int a, int b) { for (int y = a; y < b; y++) std::fill_n(&bitmap.pix(y), w, KEY); });
 		m_span.assign(h, { 0, int16_t(w) });           // (all of it to upload)
@@ -95,6 +107,7 @@ void model1::parts_begin(bitmap_rgb32 &bitmap)
 // GPU: in bands of rows, the columns put back to KEY or drawn.
 void model1::parts_end(bitmap_rgb32 &bitmap)
 {
+	if (m_external_gpu && gpu3d_on()) return;
 	const int w = bitmap.width(), h = bitmap.height();
 	const int d0 = std::max(0, m_d3_y0), d1 = std::min(h - 1, m_d3_y1);
 	constexpr int BAND = 32;

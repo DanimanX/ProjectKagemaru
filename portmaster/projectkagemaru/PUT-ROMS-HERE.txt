@@ -1,0 +1,22 @@
+ProjectKagemaru — Bring Your Own Data (BYOD)
+============================================
+
+No copyrighted ROM files or ROM-derived compiled code are included in this package.
+
+Required file on your handheld SD card:
+1. Copy your legally dumped MAME ZIP ROM archive into this folder (roms/):
+     - roms/vf.zip          (Virtua Fighter, MAME `vf` set including `315-5724.bin`)
+     - roms/model1io.zip    (Optional Model 1 I/O board MCU ROM `epr-14869b.25`)
+
+Note: ProjectKagemaru recompiles the NEC V60 arcade program directly into
+native ARM64 machine code in memory at startup using SLJIT and assets/vf_map.txt.
+No PC pre-compilation step is required!
+
+Controls on Anbernic RG34XX:
+  - D-Pad          : Move
+  - X / A / B      : Guard / Punch / Kick
+  - Y / R1 / L1    : G+P / P+K / G+K macros
+  - R2             : P+K+G (All Three)
+  - Start / Select : Start / Coin
+  - Start + Select : Pause & Settings Menu (or Menu button)
+  - Select + Y / X : Cabinet Test / Service

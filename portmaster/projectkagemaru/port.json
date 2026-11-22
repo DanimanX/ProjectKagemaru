@@ -1,0 +1,33 @@
+{
+  "version": 3,
+  "name": "projectkagemaru.zip",
+  "items": [
+    "Virtua Fighter.sh",
+    "projectkagemaru"
+  ],
+  "items_opt": [],
+  "attr": {
+    "title": "ProjectKagemaru (Virtua Fighter)",
+    "porter": "ProjectKagemaru",
+    "desc": "Native ARM64 / OpenGL ES 2.0 handheld port of vf1-recomp (Sega Model 1 static recompilation for Virtua Fighter) with on-device SLJIT ARM64 V60 recompilation, 3:2 widescreen support, 60fps smooth motion, decoupled 68000+MultiPCM sound core, and secrets/cheats. Engineered for Anbernic RG34XX (Allwinner H700 / Mali-G31).",
+    "desc_md": null,
+    "inst": "1. Copy your own legal MAME vf.zip (with 315-5724.bin) into ports/projectkagemaru/roms/vf.zip (optionally also model1io.zip).\n2. Launch Virtua Fighter.sh — SLJIT recompiles the NEC V60 program to native ARM64 automatically on startup (no PC pre-build required!).\n3. Press Start+Select (or Menu) in-game for Display, Audio, Secrets (Siba/Jeff/Takeru/Koskol/Dural), Random Fighters, Fight Switches, and Controls.",
+    "inst_md": null,
+    "genres": [
+      "fighting",
+      "arcade"
+    ],
+    "image": null,
+    "rtr": false,
+    "exp": true,
+    "runtime": null,
+    "reqs": [
+      "opengl",
+      "!lowres"
+    ],
+    "arch": [
+      "aarch64"
+    ],
+    "min_glibc": "2.28"
+  }
+}

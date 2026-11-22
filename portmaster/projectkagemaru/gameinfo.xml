@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<gameList>
+  <game>
+    <path>./Virtua Fighter.sh</path>
+    <name>ProjectKagemaru (Virtua Fighter)</name>
+    <desc>Native ARM64 / OpenGL ES 2.0 static recompilation runtime for Sega Model 1 Virtua Fighter (1993), tuned for Allwinner H700 / Anbernic RG34XX with on-device SLJIT ARM64 compilation, 3:2 widescreen, 60fps smooth motion, and Core 2 MultiPCM sound. Bring your own MAME vf.zip.</desc>
+    <image>./projectkagemaru/cover.jpg</image>
+    <releasedate>19931001T000000</releasedate>
+    <developer>SEGA AM2 (Recomp: mr-finster, ARM64 Port: ProjectKagemaru)</developer>
+    <publisher>PortMaster</publisher>
+    <genre>Fighting</genre>
+    <players>1-2</players>
+  </game>
+</gameList>

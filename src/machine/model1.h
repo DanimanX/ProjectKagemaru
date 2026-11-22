@@ -440,6 +440,10 @@ public:
 	const gpu_parts *m_last_parts = nullptr;         // what frame() holds the 3D of, when in parts
 	// the host puts pictures together from parts: a frame with no 3D is drawn in parts too
 	void set_parts_mode(bool on) { m_parts_mode = on; }
+	// External GPU mode (e.g. GLES 2.0): skip CPU bitmap clears/scans and export float quads/lines.
+	void set_external_gpu(bool on) { m_external_gpu = on; }
+	bool external_gpu() const { return m_external_gpu; }
+	void set_ext_render_wait(std::function<void()> fn) { m_ext_render_wait = std::move(fn); }
 	// the host has the game stopped (paused, the menu): no frames run until it goes on
 	void set_stopped(bool on) { m_stopped = on; }
 	// testing (VF_TRACE): the last smooth picture's blend, and the two lists' frames it was between
@@ -448,6 +452,8 @@ public:
 	float m_pic_place[3] = { 0, 0, 0 };                // testing: the 3D's mean place in the picture last drawn (the trace)
 	bool m_stopped = false;
 	bool m_parts_mode = false;
+	bool m_external_gpu = false;
+	std::function<void()> m_ext_render_wait;
 	gpu_parts m_own_parts;
 	// The parts put together on the CPU, pixel by pixel, as the GPU must (for checking a renderer):
 	// out is w x h, 0x00rrggbb. `upto`: stop at the first op with that image (-1: all of them).

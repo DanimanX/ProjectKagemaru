@@ -2797,14 +2797,18 @@ void model1::screen_vblank_model1(int state)
 void model1::record_quads(view_t *view, int count)
 {
 	const uint64_t t0 = trace_ns();
+	const bool ext = m_external_gpu;
+	const bool keep_cpu = !ext || m_gpu3d_check > 0 || m_gpu3d_verify > 0;
 	static const bool no_depth = getenv("VF_NO_SHADOW_DEPTH") != nullptr;
-	const bool depth = s_hd_raster && s_moire_blend && !no_depth;
+	const bool depth = (ext ? !m_arcade_shadows : (s_hd_raster && s_moire_blend)) && !no_depth;
 	const uint32_t batch = uint32_t(m_rec_batches.size());
-	m_rec_batches.push_back({ view->x1, view->x2, view->y1, view->y2, m_rec_quads.size(), size_t(count) });
+	if (keep_cpu) m_rec_batches.push_back({ view->x1, view->x2, view->y1, view->y2, m_rec_quads.size(), size_t(count) });
 	for (int i = 0; i < count; i++) {
 		const quad_t &q = *m_quadind[i];
-		m_rec_quads.push_back(q);
-		for (int k = 0; k < 4; k++) m_rec_points.push_back(*q.p[k]);
+		if (keep_cpu) {
+			m_rec_quads.push_back(q);
+			for (int k = 0; k < 4; k++) m_rec_points.push_back(*q.p[k]);
+		}
 		if (m_rec_bad || view->y2 < view->y1) continue;
 		int color = q.col;
 		if (color < 0) color = -1 - color;
@@ -2812,18 +2816,26 @@ void model1::record_quads(view_t *view, int count)
 		// draw_wireframe_line plots them, each a span
 		{
 			const int ax = q.p[0]->s.x, ay = q.p[0]->s.y;
-			int bx = ax, by = ay, ndist = 1;
+			int bx = ax, by = ay, ndist = 1, bidx = 0;
 			for (int k = 1; k < 4 && ndist < 3; k++) {
 				const int vx = q.p[k]->s.x, vy = q.p[k]->s.y;
 				if (vx == ax && vy == ay) continue;
-				if (ndist == 1) { bx = vx; by = vy; ndist = 2; }
+				if (ndist == 1) { bx = vx; by = vy; bidx = k; ndist = 2; }
 				else if (vx != bx || vy != by) ndist = 3;
 			}
 			if (ndist == 2) {
 				gpu3d_poly g;
-				g.flags = G3_LINE | ((color & MOIRE) && s_checker == 1 ? G3_CHECKER : 0);   // (Arcade above 1x: line_pixels kept the mesh's alone)
+				g.cx0 = view->x1; g.cx1 = view->x2; g.cy0 = view->y1; g.cy1 = view->y2;
+				g.flags = G3_LINE | ((color & MOIRE) && (ext || s_checker == 1) ? G3_CHECKER : 0);
 				g.colour = uint32_t(color & ~MOIRE);
 				g.batch = batch;
+				if (ext) {
+					g.x[0] = q.p[0]->fx; g.y[0] = q.p[0]->fy;
+					g.x[1] = q.p[bidx]->fx; g.y[1] = q.p[bidx]->fy;
+					if (std::isfinite(g.x[0]) && std::isfinite(g.y[0]) && std::isfinite(g.x[1]) && std::isfinite(g.y[1]))
+						m_rec_polys.push_back(g);
+					continue;
+				}
 				const uint32_t idx = uint32_t(m_rec_polys.size());
 				const size_t from = m_rec_spans.size();
 				line_pixels(rectangle(view->x1, view->x2, view->y1, view->y2), m_bitmap_rec_w, m_bitmap_rec_h, ax, ay, bx, by, (color & MOIRE) != 0,
@@ -2839,19 +2851,27 @@ void model1::record_quads(view_t *view, int count)
 		g.batch = batch;
 		const bool fighter = depth && fighter_shadow(q);
 		if (fighter) g.flags |= G3_FIGHTER | G3_SHADOW;
-		else if (color & MOIRE) g.flags |= s_moire_blend ? G3_SHADOW : s_checker > 1 ? G3_LINE : G3_CHECKER;   // (Arcade above 1x: the mesh's own pixels, solid)
+		else if (color & MOIRE) {
+			const bool blend_shadow = ext ? !m_arcade_shadows : s_moire_blend;
+			g.flags |= blend_shadow ? G3_SHADOW : ((!ext && s_checker > 1) ? G3_LINE : G3_CHECKER);
+		}
 		if (stage_model(q.obj)) g.flags |= G3_STAGE;
-		const bool mesh = (g.flags & G3_LINE) != 0;   // (Shadows: Arcade above 1x: its spans worked out here, as the CPU draws it)
-		g.colour = (g.flags & (G3_CHECKER | G3_LINE)) ? uint32_t(color) & 0xffffff : uint32_t(color);
+		const bool mesh = !ext && (g.flags & G3_LINE) != 0;   // (Shadows: Arcade above 1x: its spans worked out here, as the CPU draws it)
+		g.colour = (ext || (g.flags & (G3_CHECKER | G3_LINE))) ? (uint32_t(color) & 0xffffffu) : uint32_t(color);
 		const uint32_t idx = uint32_t(m_rec_polys.size());
 		int ya, yb;
-		if (s_hd_raster && !mesh) {
+		if ((ext || s_hd_raster) && !mesh) {
 			bool ok = true;
 			for (int k = 0; k < 4; k++) {
 				g.x[k] = q.p[k]->fx; g.y[k] = q.p[k]->fy;
 				ok = ok && std::fabs(g.x[k]) < 1e7f && std::fabs(g.y[k]) < 1e7f;   // (NaN fails too)
 			}
 			if (!ok) { if (!m_rec_bad && getenv("VF_LOG_GPU3D")) fprintf(stderr, "gpu3d: a vertex out of range (frame %llu, obj %06x: %g,%g %g,%g %g,%g %g,%g)\n", (unsigned long long)m_frame, q.obj, g.x[0], g.y[0], g.x[1], g.y[1], g.x[2], g.y[2], g.x[3], g.y[3]); m_rec_bad = true; continue; }
+			if (ext) {
+				g.flags |= G3_ROWS;
+				m_rec_polys.push_back(g);
+				continue;
+			}
 			const float ymin = std::min({ g.y[0], g.y[1], g.y[2], g.y[3] }), ymax = std::max({ g.y[0], g.y[1], g.y[2], g.y[3] });
 			ya = std::max(view->y1, int(std::ceil(ymin - 0.5f)));
 			yb = std::min(view->y2, int(std::ceil(ymax - 0.5f)) - 1);
@@ -2923,7 +2943,7 @@ void model1::gpu3d_end(bitmap_rgb32 &bitmap)
 	// (but a picture checked against the CPU's, or Low's smoothing done by the CPU, which reads the
 	// 3D's pixels, as before; the host's GPU does it after: set_gpu_edge). A failure there: the
 	// usual way from now on.
-	if (m_g3_target && m_parts && !check && !m_rec_bad && (!m_edge_aa || m_gpu_edge) && !m_rec_polys.empty()) {
+	if (m_g3_target && m_parts && !check && !m_rec_bad && (!m_edge_aa || m_gpu_edge) && (!m_rec_polys.empty() || m_external_gpu)) {
 		const int t = m_g3_next;
 		if (m_gpu3d->make_targets(bitmap.width(), bitmap.height(), G3_TARGETS) &&
 			m_gpu3d->draw_target(m_rec_polys.data(), m_rec_polys.size(), m_rec_spans.data(), m_rec_spans.size(), size_t(m_rec_rows) * 2,

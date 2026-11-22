@@ -1,6 +1,12 @@
 # nothing from the game: bring your own MAME "vf" set
 roms/
 build/
+build-arm64/
+build-host-arm64/
+deps/
+extern/
+dist/
+saves/
 refs/
 *.zip
 *.bin

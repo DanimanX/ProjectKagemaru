@@ -76,6 +76,15 @@ public:
 	void gpio1_w(int state) { m_gpio1 = state; }
 	void gpio2_w(int state) { m_gpio2 = state; }
 	void gpio3_w(int state) { m_gpio3 = state; }
+	void set_fast_mem(const u32 *prog, u32 prog_mask, u32 *ram0, u32 *ram1)
+	{
+		m_fast_prog = prog;
+		m_prog_mask = prog_mask;
+		m_fast_ram0 = ram0;
+		m_fast_ram1 = ram1;
+		m_prog_dirty = true;
+	}
+	void mark_prog_dirty() { m_prog_dirty = true; }
 	// The save state (model1's): every register; it waits on its FIFO at a frame's end
 	template <class IO> void state(IO &io)
 	{
@@ -89,7 +98,24 @@ public:
 	}
 
 private:
+	struct alignas(8) DecodedOp {
+		u8 kind;
+		u8 alu;
+		u16 r1;
+		union {
+			struct { u16 r2; u16 extra; };
+			u32 imm;
+		};
+	};
+
 	mb86233_bus *m_bus;
+	const u32 *m_fast_prog = nullptr;
+	u32 m_prog_mask = 0xfff;
+	u32 *m_fast_ram0 = nullptr;
+	u32 *m_fast_ram1 = nullptr;
+	bool m_prog_dirty = true;
+	DecodedOp m_decoded[0x1000]{};
+	void decode_prog();
 	bool m_stalled = false;
 	void execute_run();
 	int m_icount = 0;
@@ -102,27 +128,27 @@ private:
 
 	bool m_stall;
 
-	static u32 set_exp(u32 val, u32 exp);
-	static u32 set_mant(u32 val, u32 mant);
-	static u32 get_exp(u32 val);
-	static u32 get_mant(u32 val);
+	static inline u32 set_exp(u32 val, u32 exp);
+	static inline u32 set_mant(u32 val, u32 mant);
+	static inline u32 get_exp(u32 val);
+	static inline u32 get_mant(u32 val);
 
-	void alu_update_st();
-	void alu_pre(u32 alu);
-	void alu_post_1(u32 alu);
-	void alu_post_2(u32 alu);
-	u16 ea_pre_0(u32 r);
-	void ea_post_0(u32 r);
-	u16 ea_pre_1(u32 r);
-	void ea_post_1(u32 r);
-	void pcs_push();
-	void pcs_pop();
+	inline void alu_update_st();
+	inline void alu_pre(u32 alu);
+	inline void alu_post_1(u32 alu);
+	inline void alu_post_2(u32 alu);
+	inline u16 ea_pre_0(u32 r);
+	inline void ea_post_0(u32 r);
+	inline u16 ea_pre_1(u32 r);
+	inline void ea_post_1(u32 r);
+	inline void pcs_push();
+	inline void pcs_pop();
 	inline void stset_set_sz_int(u32 val);
 	inline void stset_set_sz_fp(u32 val);
 
-	u32 read_reg(u32 r);
-	void write_reg(u32 r, u32 v);
-	void write_mem_internal_1(u32 r, u32 v, bool bank);
+	inline u32 read_reg(u32 r);
+	inline void write_reg(u32 r, u32 v);
+	inline void write_mem_internal_1(u32 r, u32 v, bool bank);
 	void write_mem_external_1(u32 r, u32 v);
-	void write_mem_io_1(u32 r, u32 v);
+	inline void write_mem_io_1(u32 r, u32 v);
 };

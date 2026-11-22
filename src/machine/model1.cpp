@@ -165,7 +165,10 @@ void model1::run_frame()
 	}
 
 	// the picture on screen was drawn from the state this frame is about to change: keep that
-	if (m_smooth && m_shown && m_shown_frame == m_frame) keep_still();
+	if (m_smooth && m_shown && m_shown_frame == m_frame) {
+		if (m_ext_render_wait) m_ext_render_wait();
+		keep_still();
+	}
 	if (m_kage_unmasked && m_ram_a.size() > 0xe009) m_ram_a[0xe009] |= 1;
 	for (int line = 0; line < V_TOTAL; line++) {
 		if (line == VBLANK_LINE) {
@@ -202,6 +205,7 @@ void model1::run_frame()
 	// MAME draws the screen when vblank ends (VIDEO_UPDATE_AFTER_VBLANK): the 2D layers are
 	// as the vblank handler left them
 	if (m_draw) {
+		if (m_ext_render_wait) m_ext_render_wait();
 		if (m_smooth) record_frame();     // drawn later, for the moment shown (render_smooth)
 		else screen_update(m_bitmap, m_bitmap.cliprect());
 	}

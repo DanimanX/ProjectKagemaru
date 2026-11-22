@@ -1,0 +1,247 @@
+// Adaptive-rate SDL2 audio output for ProjectKagemaru (48 kHz m1audio -> 48 kHz SDL2).
+// Smoothly absorbs 57.524 Hz <-> 60 Hz pacing differences without crackles.
+#pragma once
+
+#include <SDL.h>
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
+#include <cstring>
+#include <vector>
+
+namespace arm64 {
+
+class AudioRate {
+public:
+    static constexpr int kTargetFrames = 3072; // ~64 ms @ 48 kHz
+    static constexpr int kPrimeFrames = 2560;  // ~53 ms before unpausing
+    static constexpr double kMaxSlowDown = 0.05;
+    static constexpr double kMaxSpeedUp = 0.01;
+    static constexpr double kGain = 0.05;
+    static constexpr double kIntegral = 0.0002;
+    static constexpr double kSmoothing = 0.05;
+    static constexpr double kSlew = 0.0005;
+
+    void reset(int level) { average_ = double(level); }
+    double update(int level) {
+        average_ += (double(level) - average_) * kSmoothing;
+        const double error = (average_ - double(kTargetFrames)) / double(kTargetFrames);
+        integral_ = std::clamp(integral_ + error * kIntegral, -kMaxSlowDown, kMaxSpeedUp);
+        const double want = 1.0 + std::clamp(error * kGain + integral_, -kMaxSlowDown, kMaxSpeedUp);
+        ratio_ += std::clamp(want - ratio_, -kSlew, kSlew);
+        return ratio_;
+    }
+    double ratio() const { return ratio_; }
+    double average() const { return average_; }
+
+private:
+    double average_ = double(kTargetFrames);
+    double ratio_ = 1.0;
+    double integral_ = 0.0;
+};
+
+class StereoResampler {
+public:
+    void reset() {
+        prev_[0] = prev_[1] = cur_[0] = cur_[1] = 0.0f;
+        frac_ = 0.0;
+    }
+    int needed(int out_frames, double ratio) const {
+        double frac = frac_;
+        int consumed = 0;
+        for (int i = 0; i < out_frames; ++i) {
+            frac += ratio;
+            while (frac >= 1.0) { frac -= 1.0; ++consumed; }
+        }
+        return consumed;
+    }
+    int run(const int16_t *in, int in_frames, float *out, int out_frames, double ratio) {
+        int used = 0;
+        for (int i = 0; i < out_frames; ++i) {
+            const float t = float(frac_);
+            out[2 * i] = prev_[0] + (cur_[0] - prev_[0]) * t;
+            out[2 * i + 1] = prev_[1] + (cur_[1] - prev_[1]) * t;
+            frac_ += ratio;
+            while (frac_ >= 1.0) {
+                frac_ -= 1.0;
+                prev_[0] = cur_[0];
+                prev_[1] = cur_[1];
+                if (used < in_frames) {
+                    cur_[0] = float(in[2 * used]) * (1.0f / 32768.0f);
+                    cur_[1] = float(in[2 * used + 1]) * (1.0f / 32768.0f);
+                    ++used;
+                } else {
+                    cur_[0] *= 0.992f;
+                    cur_[1] *= 0.992f;
+                }
+            }
+        }
+        return used;
+    }
+
+private:
+    float prev_[2] = {}, cur_[2] = {};
+    double frac_ = 0.0;
+};
+
+class Audio {
+public:
+    struct Stats {
+        unsigned underruns = 0;
+        double ratio = 1.0;
+        double queued_ms = 0.0;
+    };
+
+    Audio() = default;
+    Audio(const Audio &) = delete;
+    Audio &operator=(const Audio &) = delete;
+    ~Audio() { close(); }
+
+    bool open(int source_rate = 48000) {
+        source_rate_ = source_rate;
+        SDL_AudioSpec want{}, got{};
+        want.freq = 48000;
+        want.format = AUDIO_S16SYS;
+        want.channels = 2;
+        want.samples = 512;
+        want.callback = callback;
+        want.userdata = this;
+        device_ = SDL_OpenAudioDevice(nullptr, 0, &want, &got, 0);
+        if (!device_) return false;
+        rate_ = got.freq > 0 ? got.freq : 48000;
+        stream_ = SDL_NewAudioStream(AUDIO_S16SYS, 2, source_rate_, AUDIO_S16SYS, 2, rate_);
+        if (!stream_) { close(); return false; }
+        restart_locked();
+        return true;
+    }
+
+    void push(const int16_t *samples, size_t count) {
+        if (!device_ || !stream_ || !samples || !count) return;
+        SDL_LockAudioDevice(device_);
+        const int max_bytes = rate_ * kFrameBytes / 4; // cap at 250 ms
+        if (SDL_AudioStreamAvailable(stream_) > max_bytes) {
+            SDL_AudioStreamClear(stream_);
+        }
+        SDL_AudioStreamPut(stream_, samples, int(count * sizeof(int16_t)));
+        const int prime = AudioRate::kPrimeFrames * kFrameBytes;
+        const bool ready = SDL_AudioStreamAvailable(stream_) >= prime;
+        SDL_UnlockAudioDevice(device_);
+        if (!playing_ && ready) {
+            SDL_PauseAudioDevice(device_, 0);
+            playing_ = true;
+        }
+    }
+
+    void pause() {
+        if (!device_) return;
+        SDL_PauseAudioDevice(device_, 1);
+        SDL_LockAudioDevice(device_);
+        if (stream_) SDL_AudioStreamClear(stream_);
+        restart_locked();
+        SDL_UnlockAudioDevice(device_);
+        playing_ = false;
+    }
+
+    int queued_frames() {
+        if (!device_) return 0;
+        SDL_LockAudioDevice(device_);
+        const int q = queued_frames_locked();
+        SDL_UnlockAudioDevice(device_);
+        return q;
+    }
+
+    Stats stats() {
+        Stats out;
+        if (!device_) return out;
+        SDL_LockAudioDevice(device_);
+        out.underruns = underruns_;
+        out.ratio = rate_control_.ratio();
+        out.queued_ms = rate_control_.average() * 1000.0 / double(rate_);
+        SDL_UnlockAudioDevice(device_);
+        return out;
+    }
+
+    void volume(float value) {
+        if (device_) SDL_LockAudioDevice(device_);
+        volume_ = std::clamp(value, 0.0f, 1.0f);
+        if (device_) SDL_UnlockAudioDevice(device_);
+    }
+
+    void mute(bool muted) {
+        if (device_) SDL_LockAudioDevice(device_);
+        muted_ = muted;
+        if (device_) SDL_UnlockAudioDevice(device_);
+    }
+
+    void close() {
+        if (device_) SDL_CloseAudioDevice(device_);
+        device_ = 0;
+        if (stream_) SDL_FreeAudioStream(stream_);
+        stream_ = nullptr;
+        playing_ = false;
+    }
+
+private:
+    static constexpr int kFrameBytes = 2 * int(sizeof(int16_t));
+    static constexpr int kChunk = 512;
+    static constexpr int kMaxInput = kChunk * 2;
+
+    void restart_locked() {
+        buffering_ = true;
+        resampler_.reset();
+    }
+    int queued_frames_locked() const {
+        return stream_ ? SDL_AudioStreamAvailable(stream_) / kFrameBytes : 0;
+    }
+
+    static void callback(void *userdata, Uint8 *buffer, int bytes) {
+        auto &self = *static_cast<Audio *>(userdata);
+        std::memset(buffer, 0, size_t(bytes));
+        auto *out = reinterpret_cast<int16_t *>(buffer);
+        int frames = bytes / kFrameBytes;
+        int queued = self.queued_frames_locked();
+        if (self.buffering_) {
+            if (queued < AudioRate::kPrimeFrames) return;
+            self.buffering_ = false;
+            self.rate_control_.reset(queued);
+        }
+        const double ratio = self.rate_control_.update(queued);
+        while (frames > 0) {
+            const int n = std::min(frames, kChunk);
+            const int need = self.resampler_.needed(n, ratio);
+            int got = std::min(need, kMaxInput);
+            if (need > queued) {
+                ++self.underruns_;
+                got = std::min(queued, kMaxInput);
+            }
+            if (got > 0) {
+                SDL_AudioStreamGet(self.stream_, self.in_buf_, got * kFrameBytes);
+            }
+            queued -= got;
+            self.resampler_.run(self.in_buf_, got, self.mixed_, n, ratio);
+            for (int i = 0; i < n * 2; ++i) {
+                float sample = self.muted_ ? 0.0f : self.mixed_[i] * self.volume_;
+                if (!std::isfinite(sample)) sample = 0.0f;
+                out[i] = int16_t(std::clamp(sample, -1.0f, 1.0f) * 32767.0f);
+            }
+            frames -= n;
+            out += n * 2;
+        }
+    }
+
+    SDL_AudioDeviceID device_ = 0;
+    SDL_AudioStream *stream_ = nullptr;
+    int source_rate_ = 48000;
+    int rate_ = 48000;
+    bool playing_ = false;
+    bool muted_ = false;
+    float volume_ = 0.9f;
+    AudioRate rate_control_;
+    StereoResampler resampler_;
+    bool buffering_ = true;
+    unsigned underruns_ = 0;
+    int16_t in_buf_[kMaxInput * 2] = {};
+    float mixed_[kChunk * 2] = {};
+};
+
+} // namespace arm64

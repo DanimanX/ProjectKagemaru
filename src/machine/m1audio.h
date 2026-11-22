@@ -21,6 +21,8 @@ public:
 	// VF plays its music on the first MultiPCM and its effects and voices on the second (the FM
 	// chip stays silent): each can be turned down on its own. 1 = as the cabinet.
 	void set_volumes(float music, float effects) { m_music = music; m_effects = effects; }
+	void set_fm_enabled(bool on) { m_fm_enabled = on; }
+	bool fm_enabled() const { return m_fm_enabled; }
 
 	// Serial link, one byte at a time (the main board's i8251 paces it).
 	void rx_byte(uint8_t b) { m_rx.push_back(b); }
@@ -42,6 +44,7 @@ private:
 	std::unique_ptr<ym_glue> m_ym;
 	uint32_t m_bank1 = 0, m_bank2 = 0;
 	float m_music = 1, m_effects = 1;
+	bool m_fm_enabled = true;
 
 	// the board's i8251
 	std::deque<uint8_t> m_rx, m_tx;
