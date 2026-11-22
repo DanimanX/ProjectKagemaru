@@ -287,7 +287,7 @@ cp portmaster/projectkagemaru/gameinfo.xml "$OUT/projectkagemaru/"
 cp portmaster/projectkagemaru/gamecontrollerdb.txt "$OUT/projectkagemaru/"
 cp portmaster/projectkagemaru/PUT-ROMS-HERE.txt "$OUT/projectkagemaru/roms/PUT-ROMS-HERE.txt"
 cp assets/vf_map.txt "$OUT/projectkagemaru/assets/vf_map.txt"
-[ -f assets/projectkagemaru-banner.jpg ] && cp assets/projectkagemaru-banner.jpg "$OUT/projectkagemaru/cover.jpg"
+[ -f assets/projectkagemaru-cover.jpg ] && cp assets/projectkagemaru-cover.jpg "$OUT/projectkagemaru/cover.jpg"
 cp "$BDIR/vf1.aarch64" "$OUT/projectkagemaru/vf1.aarch64"
 chmod +x "$OUT/projectkagemaru/vf1.aarch64"
 

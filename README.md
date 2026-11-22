@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/projectkagemaru-banner.jpg" alt="ProjectKagemaru — Virtua Fighter ARM64 on Allwinner H700 (Anbernic RG34XX)" width="100%">
+  <img src="assets/projectkagemaru-cover.jpg" alt="ProjectKagemaru — Virtua Fighter ARM64 on Allwinner H700 (Anbernic RG34XX)" width="100%">
 </p>
 
 # ProjectKagemaru — Virtua Fighter ARM64 / Anbernic RG34XX Port
