@@ -20,7 +20,7 @@ constexpr size_t kIndexedVertexLimit = 65536;
 constexpr size_t kQuadIndices = kIndexedVertexLimit / 4 * 6;
 
 const char *const kVertexShader = R"(
-attribute vec2 a_pos;
+attribute vec3 a_pos;
 attribute vec2 a_uv;
 attribute vec4 a_color;
 uniform vec2 u_inv_screen;
@@ -29,7 +29,7 @@ varying mediump vec4 v_color;
 void main() {
     gl_Position = vec4(a_pos.x * (2.0 * u_inv_screen.x) - 1.0,
                        1.0 - a_pos.y * (2.0 * u_inv_screen.y),
-                       0.0, 1.0);
+                       2.0 * a_pos.z - 1.0, 1.0);
     v_uv = a_uv;
     v_color = a_color;
 }
@@ -74,12 +74,14 @@ enum class StencilMode : uint8_t {
     ShadowAny      // blend only where (shadowed==0), then set bit 1
 };
 
+enum class Depth : uint8_t { Off = 0, Test, Write };
+
 struct Vertex {
-    float x, y;
+    float x, y, z;
     float u, v;
     uint32_t color;
 };
-static_assert(sizeof(Vertex) == 20, "Vertex must stay 20 bytes");
+static_assert(sizeof(Vertex) == 24, "Vertex must stay 24 bytes");
 
 struct Cmd {
     Prog prog;
@@ -88,6 +90,7 @@ struct Cmd {
     int clip;
     bool blend;
     bool quads;
+    Depth depth;
     StencilMode stencil;
     float checker_px;
 };
@@ -179,7 +182,7 @@ inline uint32_t xrgb_to_rgba(uint32_t c, uint32_t alpha = 0xffu) {
 }
 
 void push(Prog prog, GLuint texture, const Vertex *vertices, size_t count,
-          bool blend = true, StencilMode stencil = StencilMode::Off, float checker_px = 1.0f) {
+          bool blend = true, StencilMode stencil = StencilMode::Off, float checker_px = 1.0f, Depth depth = Depth::Off) {
     if (!count) return;
     const uint32_t first = uint32_t(g.verts.size);
     Vertex *dst = g.verts.append(count);
@@ -187,23 +190,23 @@ void push(Prog prog, GLuint texture, const Vertex *vertices, size_t count,
     if (!g.cmds.empty()) {
         Cmd &last = g.cmds.back();
         if (!last.quads && last.prog == prog && last.texture == texture &&
-            last.clip == g.clip && last.blend == blend && last.stencil == stencil &&
-            last.checker_px == checker_px && last.first + last.count == first) {
+            last.clip == g.clip && last.blend == blend && last.depth == depth &&
+            last.stencil == stencil && last.checker_px == checker_px && last.first + last.count == first) {
             last.count += uint32_t(count);
             return;
         }
     }
-    g.cmds.push_back({prog, texture, first, uint32_t(count), g.clip, blend, false, stencil, checker_px});
+    g.cmds.push_back({prog, texture, first, uint32_t(count), g.clip, blend, false, depth, stencil, checker_px});
 }
 
 void push_quad(Prog prog, GLuint texture, float x0, float y0, float x1, float y1,
                float u0, float v0, float u1, float v1, uint32_t color,
-               bool blend = true, StencilMode stencil = StencilMode::Off, float checker_px = 1.0f) {
+               bool blend = true, StencilMode stencil = StencilMode::Off, float checker_px = 1.0f, Depth depth = Depth::Off) {
     const Vertex q[6] = {
-        {x0, y0, u0, v0, color}, {x1, y0, u1, v0, color}, {x1, y1, u1, v1, color},
-        {x0, y0, u0, v0, color}, {x1, y1, u1, v1, color}, {x0, y1, u0, v1, color},
+        {x0, y0, 0.0f, u0, v0, color}, {x1, y0, 0.0f, u1, v0, color}, {x1, y1, 0.0f, u1, v1, color},
+        {x0, y0, 0.0f, u0, v0, color}, {x1, y1, 0.0f, u1, v1, color}, {x0, y1, 0.0f, u0, v1, color},
     };
-    push(prog, texture, q, 6, blend, stencil, checker_px);
+    push(prog, texture, q, 6, blend, stencil, checker_px, depth);
 }
 
 int add_clip(const std::array<int, 4> &rect) {
@@ -266,16 +269,16 @@ void execute() {
     gl.glBufferData(GL_ARRAY_BUFFER, GLsizeiptr(g.verts.size * sizeof(Vertex)), g.verts.data(), GL_STREAM_DRAW);
     if (g.quad_ibo) gl.glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, g.quad_ibo);
     for (GLuint i = 0; i < 3; ++i) gl.glEnableVertexAttribArray(i);
-    gl.glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, sizeof(Vertex), reinterpret_cast<const void *>(0));
-    gl.glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, sizeof(Vertex), reinterpret_cast<const void *>(8));
-    gl.glVertexAttribPointer(2, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(Vertex), reinterpret_cast<const void *>(16));
+    gl.glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), reinterpret_cast<const void *>(0));
+    gl.glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, sizeof(Vertex), reinterpret_cast<const void *>(12));
+    gl.glVertexAttribPointer(2, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(Vertex), reinterpret_cast<const void *>(20));
 
     gl.glActiveTexture(GL_TEXTURE0);
     const float inv_w = 1.0f / float(std::max(g.display_w, 1));
     const float inv_h = 1.0f / float(std::max(g.display_h, 1));
 
     GLuint program = 0, texture = 0;
-    int blend = -1, clip = -2, stencil = -1;
+    int blend = -1, depth_mode = -1, clip = -2, stencil = -1;
     float last_checker = -1.0f;
     for (const Cmd &c : g.cmds) {
         const int pi = int(c.prog);
@@ -288,6 +291,17 @@ void execute() {
         if (c.prog == Prog::FlatChecker && g.u_checker[pi] >= 0 && c.checker_px != last_checker) {
             gl.glUniform1f(g.u_checker[pi], std::max(c.checker_px, 1.0f));
             last_checker = c.checker_px;
+        }
+        const int dm = int(c.depth);
+        if (dm != depth_mode) {
+            if (c.depth == Depth::Off) {
+                gl.glDisable(GL_DEPTH_TEST);
+                gl.glDepthMask(GL_FALSE);
+            } else {
+                if (depth_mode <= 0) gl.glEnable(GL_DEPTH_TEST);
+                gl.glDepthMask(c.depth == Depth::Write ? GL_TRUE : GL_FALSE);
+            }
+            depth_mode = dm;
         }
         const int want_blend = c.blend ? 1 : 0;
         if (want_blend != blend) {
@@ -484,7 +498,10 @@ bool gl_init(const GlConfig &cfg) {
     gl.glViewport(0, 0, g.display_w, g.display_h);
     gl.glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
     gl.glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+    gl.clear_depth(0.0f);
+    gl.depth_range(0.0f, 1.0f);
     gl.glClearStencil(0);
+    gl.glDepthFunc(GL_GREATER);
     gl.glDepthMask(GL_FALSE);
     gl.glDisable(GL_DEPTH_TEST);
     gl.glDisable(GL_CULL_FACE);
@@ -561,9 +578,12 @@ void gl_begin_frame() {
     auto &gl = g.gl;
     gl.glViewport(0, 0, g.display_w, g.display_h);
     gl.glDisable(GL_SCISSOR_TEST);
+    gl.glDisable(GL_DEPTH_TEST);
     gl.glDisable(GL_STENCIL_TEST);
+    gl.glDepthMask(GL_TRUE);
     gl.glStencilMask(0xFFu);
-    gl.glClear(GL_COLOR_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
+    gl.glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
+    gl.glDepthMask(GL_FALSE);
 }
 
 void gl_end_frame() {
@@ -634,18 +654,19 @@ void gl_ui_triangles(uint32_t texture, const GlUiVertex *vertices, size_t count,
     const uint32_t first = uint32_t(dst - g.verts.data());
     for (size_t i = 0; i < count; ++i) {
         const GlUiVertex &v = vertices[i];
-        dst[i] = {v.x, v.y, v.u, v.v, v.rgba};
+        dst[i] = {v.x, v.y, 0.0f, v.u, v.v, v.rgba};
     }
     const int clip = add_clip({x0, y0, x1, y1});
     if (!g.cmds.empty()) {
         Cmd &last = g.cmds.back();
         if (!last.quads && last.prog == Prog::Ui && last.texture == texture && last.clip == clip &&
-            last.blend && last.stencil == StencilMode::Off && last.first + last.count == first) {
+            last.blend && last.depth == Depth::Off && last.stencil == StencilMode::Off &&
+            last.first + last.count == first) {
             last.count += uint32_t(count);
             return;
         }
     }
-    g.cmds.push_back({Prog::Ui, texture, first, uint32_t(count), clip, true, false, StencilMode::Off, 1.0f});
+    g.cmds.push_back({Prog::Ui, texture, first, uint32_t(count), clip, true, false, Depth::Off, StencilMode::Off, 1.0f});
 }
 
 // ---- GpuGlesRenderer ---------------------------------------------------------
@@ -937,33 +958,65 @@ void GpuGlesRenderer::emit_3d_polys(const gpu3d_poly *polys, size_t count,
     const float psy = sy * inv_rs;
     const float checker_px = std::max(1.0f, std::round(sx));
 
-    auto flush_run = [&](Prog prog, int clip, bool blend, StencilMode stencil, size_t run_quads,
-                         const Vertex *run_src) {
+    auto flush_run = [&](Prog prog, int clip, bool blend, Depth depth_mode, StencilMode stencil,
+                         size_t run_quads, const Vertex *run_src) {
         if (!run_quads) return;
-        Vertex *dst = append_quads(run_quads);
-        if (dst) {
-            const uint32_t first = uint32_t(dst - g.verts.data());
-            std::memcpy(dst, run_src, run_quads * 4 * sizeof(Vertex));
-            g.cmds.push_back({prog, 0, first, uint32_t(run_quads * 4), clip, blend, true, stencil, checker_px});
-        } else {
-            for (size_t q = 0; q < run_quads; ++q) {
-                const Vertex *v = run_src + q * 4;
-                const Vertex tri[6] = {v[0], v[1], v[2], v[0], v[2], v[3]};
-                g.clip = clip;
-                push(prog, 0, tri, 6, blend, stencil, checker_px);
+        size_t offset = 0;
+        while (offset < run_quads) {
+            const size_t chunk = std::min(run_quads - offset, kIndexedVertexLimit / 4);
+            Vertex *dst = append_quads(chunk);
+            if (dst) {
+                const uint32_t first = uint32_t(dst - g.verts.data());
+                std::memcpy(dst, run_src + offset * 4, chunk * 4 * sizeof(Vertex));
+                g.cmds.push_back({prog, 0, first, uint32_t(chunk * 4), clip, blend, true, depth_mode, stencil, checker_px});
+            } else {
+                for (size_t q = 0; q < chunk; ++q) {
+                    const Vertex *v = run_src + (offset + q) * 4;
+                    const Vertex tri[6] = {v[0], v[1], v[2], v[0], v[2], v[3]};
+                    g.clip = clip;
+                    push(prog, 0, tri, 6, blend, stencil, checker_px, depth_mode);
+                }
             }
+            ++last_batch_count_;
+            offset += chunk;
         }
-        ++last_batch_count_;
     };
 
-    std::vector<Vertex> run_buf;
-    run_buf.reserve(4096);
-    Prog cur_prog = Prog::Flat;
-    int cur_clip = -2;
-    bool cur_blend = false;
-    StencilMode cur_stencil = StencilMode::Off;
-    size_t cur_quads = 0;
+    struct PolyBucket {
+        uint64_t key = 0;
+        int clip = 0;
+        Prog prog = Prog::Flat;
+        bool blend = false;
+        Depth depth_mode = Depth::Write;
+        StencilMode stencil = StencilMode::Off;
+        std::vector<Vertex> verts;
+    };
+    static std::vector<PolyBucket> buckets;
+    for (auto &b : buckets) b.verts.clear();
+    size_t used_buckets = 0;
 
+    auto get_bucket = [&](int clip, Prog prog, bool blend, Depth depth_mode, StencilMode stencil) -> PolyBucket & {
+        const uint64_t key = (uint64_t(uint16_t(clip)) << 24) |
+                             (uint64_t(prog) << 16) |
+                             (uint64_t(blend ? 1 : 0) << 12) |
+                             (uint64_t(depth_mode) << 8) |
+                             uint64_t(stencil);
+        for (size_t bi = 0; bi < used_buckets; ++bi) {
+            if (buckets[bi].key == key) return buckets[bi];
+        }
+        if (used_buckets == buckets.size()) buckets.emplace_back();
+        PolyBucket &b = buckets[used_buckets++];
+        b.key = key;
+        b.clip = clip;
+        b.prog = prog;
+        b.blend = blend;
+        b.depth_mode = depth_mode;
+        b.stencil = stencil;
+        b.verts.clear();
+        return b;
+    };
+
+    const float depth_step = 0.9998f / float(count + 2);
     for (size_t i = 0; i < count; ++i) {
         const gpu3d_poly &p = polys[i];
         const int vx0 = std::clamp(int(std::floor(ox + float(p.cx0) * psx)), 0, g.display_w);
@@ -981,6 +1034,7 @@ void GpuGlesRenderer::emit_3d_polys(const gpu3d_poly *polys, size_t count,
 
         const Prog prog = (is_checker && (arcade_shadows || is_line)) ? Prog::FlatChecker : Prog::Flat;
         const bool blend = is_shadow;
+        const Depth depth_mode = (is_shadow || prog == Prog::FlatChecker) ? Depth::Test : Depth::Write;
         StencilMode stencil = StencilMode::Off;
         if (g.stencil_bits >= 2 && !arcade_shadows) {
             if (is_fighter_shadow) stencil = StencilMode::ShadowFighter;
@@ -988,6 +1042,7 @@ void GpuGlesRenderer::emit_3d_polys(const gpu3d_poly *polys, size_t count,
             else if (!is_line) stencil = is_stage ? StencilMode::WriteStage : StencilMode::WriteFighter;
         }
         const uint32_t col = xrgb_to_rgba(p.colour, is_shadow ? 128u : 255u);
+        const float z = float(i + 1) * depth_step;
 
         Vertex qv[4];
         if (is_line) {
@@ -998,35 +1053,31 @@ void GpuGlesRenderer::emit_3d_polys(const gpu3d_poly *polys, size_t count,
             const float half = std::max(0.5f, 0.5f * psx);
             const float nx = len > 1e-4f ? (-dy / len) * half : half;
             const float ny = len > 1e-4f ? (dx / len) * half : 0.0f;
-            qv[0] = {x0 - nx, y0 - ny, 0, 0, col};
-            qv[1] = {x0 + nx, y0 + ny, 0, 0, col};
-            qv[2] = {x1 + nx, y1 + ny, 0, 0, col};
-            qv[3] = {x1 - nx, y1 - ny, 0, 0, col};
+            qv[0] = {x0 - nx, y0 - ny, z, 0, 0, col};
+            qv[1] = {x0 + nx, y0 + ny, z, 0, 0, col};
+            qv[2] = {x1 + nx, y1 + ny, z, 0, 0, col};
+            qv[3] = {x1 - nx, y1 - ny, z, 0, 0, col};
         } else {
             for (int k = 0; k < 4; ++k) {
-                qv[k] = {ox + p.x[k] * psx, oy + p.y[k] * psy, 0.0f, 0.0f, col};
+                qv[k] = {ox + p.x[k] * psx, oy + p.y[k] * psy, z, 0.0f, 0.0f, col};
             }
         }
 
-        const bool state_changed = cur_quads > 0 && (prog != cur_prog || clip != cur_clip ||
-                                                   blend != cur_blend || stencil != cur_stencil ||
-                                                   (cur_quads + 1) * 4 > kIndexedVertexLimit);
-        if (state_changed) {
-            flush_run(cur_prog, cur_clip, cur_blend, cur_stencil, cur_quads, run_buf.data());
-            run_buf.clear();
-            cur_quads = 0;
-        }
-        if (cur_quads == 0) {
-            cur_prog = prog;
-            cur_clip = clip;
-            cur_blend = blend;
-            cur_stencil = stencil;
-        }
-        run_buf.insert(run_buf.end(), qv, qv + 4);
-        ++cur_quads;
+        PolyBucket &b = get_bucket(clip, prog, blend, depth_mode, stencil);
+        b.verts.insert(b.verts.end(), qv, qv + 4);
     }
-    if (cur_quads > 0) {
-        flush_run(cur_prog, cur_clip, cur_blend, cur_stencil, cur_quads, run_buf.data());
+
+    // Pass 1: Opaque geometry (writes depth + stencil)
+    for (size_t bi = 0; bi < used_buckets; ++bi) {
+        const PolyBucket &b = buckets[bi];
+        if (b.depth_mode != Depth::Write || b.verts.empty()) continue;
+        flush_run(b.prog, b.clip, b.blend, b.depth_mode, b.stencil, b.verts.size() / 4, b.verts.data());
+    }
+    // Pass 2: Shadows & checkerboard overlays (tested against opaque depth + stencil)
+    for (size_t bi = 0; bi < used_buckets; ++bi) {
+        const PolyBucket &b = buckets[bi];
+        if (b.depth_mode == Depth::Write || b.verts.empty()) continue;
+        flush_run(b.prog, b.clip, b.blend, b.depth_mode, b.stencil, b.verts.size() / 4, b.verts.data());
     }
     g.clip = -1;
 }

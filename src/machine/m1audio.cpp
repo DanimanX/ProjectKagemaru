@@ -190,6 +190,8 @@ void m1audio::run(double usec, std::vector<int16_t> &out)
 			m_ym_buf.l.push_back(0.30f * m_music * o.data[0]);
 			m_ym_buf.r.push_back(0.30f * m_music * o.data[1]);
 		}
+	} else if (nym > 0) {
+		m_ym->advance(int64_t(YM_HZ / ym_rate) * nym);
 	}
 
 	// resample both to OUT_RATE (linear) and mix

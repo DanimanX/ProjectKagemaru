@@ -63,6 +63,7 @@ public:
         core_ = core;
         stop_ = false;
         busy_ = false;
+        pending_ = false;
         render_busy_ = false;
         game_->set_ext_render_wait([this]() { wait_render_done(); });
         thread_ = std::thread(&EmuWorker::loop, this);
@@ -83,6 +84,7 @@ public:
             game_->set_ext_render_wait({});
             game_ = nullptr;
         }
+        pending_ = false;
     }
 
     void start_frame(bool render_in_progress) {
@@ -90,6 +92,7 @@ public:
             std::lock_guard<std::mutex> lk(mu_);
             render_busy_ = render_in_progress;
             busy_ = true;
+            pending_ = true;
         }
         cv_.notify_one();
     }
@@ -107,19 +110,25 @@ public:
         if (!thread_.joinable()) return;
         std::unique_lock<std::mutex> lk(mu_);
         done_.wait(lk, [&] { return !busy_; });
+        pending_ = false;
     }
 
-    bool is_busy() {
+    bool has_pending() {
         std::lock_guard<std::mutex> lk(mu_);
-        return busy_;
+        return pending_;
     }
 
     double last_emu_ms() const { return last_emu_ms_.load(std::memory_order_relaxed); }
 
 private:
     void wait_render_done() {
-        std::unique_lock<std::mutex> lk(mu_);
-        render_cv_.wait(lk, [&] { return !render_busy_ || stop_; });
+        const uint64_t tw0 = ticks_us();
+        {
+            std::unique_lock<std::mutex> lk(mu_);
+            if (!render_busy_ || stop_) return;
+            render_cv_.wait(lk, [&] { return !render_busy_ || stop_; });
+        }
+        wait_us_ += (ticks_us() - tw0);
     }
 
     void loop() {
@@ -131,9 +140,11 @@ private:
                 cv_.wait(lk, [&] { return stop_ || busy_; });
                 if (stop_) return;
             }
+            wait_us_ = 0;
             const uint64_t t0 = ticks_us();
             game_->run_frame();
-            const double ms = double(ticks_us() - t0) / 1000.0;
+            const uint64_t elapsed = ticks_us() - t0;
+            const double ms = double(elapsed > wait_us_ ? (elapsed - wait_us_) : 0ull) / 1000.0;
             last_emu_ms_.store(ms, std::memory_order_relaxed);
             {
                 std::lock_guard<std::mutex> lk(mu_);
@@ -150,7 +161,9 @@ private:
     std::condition_variable cv_, done_, render_cv_;
     bool stop_ = false;
     bool busy_ = false;
+    bool pending_ = false;
     bool render_busy_ = false;
+    uint64_t wait_us_ = 0;
     std::atomic<double> last_emu_ms_{0.0};
 };
 
@@ -230,7 +243,7 @@ struct Settings {
     int music_volume = 100;
     int effects_volume = 100;
     bool mute = false;
-    bool fm_synth = false;          // VF1 YM3438 stays silent; OFF saves Core 2 CPU
+    bool fm_synth = true;           // VF1 YM3438 timers & FM channels
 
     // Arcade & Cheats
     bool free_play = true;
@@ -806,9 +819,10 @@ int main(int argc, char **argv) {
                 uart_bytes.clear();
                 game->run_frame();
                 sound_worker.wait();
-                sound_worker.submit(std::move(uart_bytes));
+                sound_worker.submit(std::move(uart_bytes), true);
             }
             sound_worker.wait();
+            if (audio_ok) audio.pause();
             game->set_drawing(true);
         }
         sound_worker.set_paused(false);
@@ -880,10 +894,11 @@ int main(int argc, char **argv) {
                 in0 &= ~arm64::IN0_TEST;
                 --test_hold_frames;
             }
-            arm64::apply_player_buttons(p0_btns, cfg.bindings, false, in0, in1, sys_combo);
+            const bool sys_action = sys_combo && ((p0_btns & (arm64::BtnY | arm64::BtnX | arm64::Start)) != 0);
+            arm64::apply_player_buttons(p0_btns, cfg.bindings, false, in0, in1, sys_action);
             arm64::apply_player_buttons(p1_btns, cfg.bindings, true, in0, in2, false);
 
-            if (!emu_worker.is_busy()) {
+            if (!emu_worker.has_pending()) {
                 game->m_inputs[0] = in0;
                 game->m_inputs[1] = in1;
                 game->m_inputs[2] = in2;
@@ -905,21 +920,26 @@ int main(int argc, char **argv) {
                 save_text(data_dir + "/saves/ranking_names.txt", game->ranking_names());
             }
 
-            const uint64_t t_ren0 = ticks_us();
-            const arm64::AspectMode aspect_mode = static_cast<arm64::AspectMode>(cfg.aspect);
-            const int rc = game->render_parts(double(game->frame_number()), parts, true);
-            if (rc != 0) last_parts_rc = rc;
+            const double render_frame_num = double(game->frame_number());
             const int game_w = game->arcade_width();
-            const uint64_t t_parts1 = ticks_us();
-            last_parts_ms = double(t_parts1 - t_ren0) / 1000.0;
+            const arm64::AspectMode aspect_mode = static_cast<arm64::AspectMode>(cfg.aspect);
 
-            const bool use_parts = (last_parts_rc == 1);
-            // Launch Core 1 on NEXT frame in parallel with Core 0 GLES + Swap
+            // Immediately launch Core 1 on NEXT frame's active display (lines 0..383)
+            // in parallel with Core 0's 2D/3D export + GLES + Swap!
             game->m_inputs[0] = in0;
             game->m_inputs[1] = in1;
             game->m_inputs[2] = in2;
             game->fight_cheats(cfg.cheat_inf_energy, cfg.cheat_one_hit, cfg.cheat_no_time);
-            emu_worker.start_frame(use_parts);
+            emu_worker.start_frame(true);
+
+            const uint64_t t_ren0 = ticks_us();
+            const int rc = game->render_parts(render_frame_num, parts, true);
+            if (rc != 0) last_parts_rc = rc;
+            const uint64_t t_parts1 = ticks_us();
+            last_parts_ms = double(t_parts1 - t_ren0) / 1000.0;
+            emu_worker.mark_render_done();
+
+            const bool use_parts = (last_parts_rc == 1);
 
             arm64::gl_begin_frame();
             if (use_parts) {
@@ -927,7 +947,6 @@ int main(int argc, char **argv) {
                 gpu.draw_frame(parts, game_w, aspect_mode,
                                polys.data(), polys.size(),
                                cfg.arcade_shadows, cfg.render_scale);
-                emu_worker.mark_render_done();
             } else {
                 const bitmap_rgb32 &fb = game->frame();
                 gpu.draw_cpu_framebuffer(fb.data(), fb.width(), fb.height(), aspect_mode);

@@ -198,6 +198,7 @@ printf '%s\n' "${RT_SRCS[@]}" | xargs -P "$JOBS" -I{} sh -c '
     extra=""
     case "$src" in
         third_party/*|src/host/stb_image_impl.cpp) extra="-w -O3 -fno-math-errno" ;;
+        src/machine/model1_video.cpp|src/machine/model1_interp.cpp|src/machine/model1_gpu.cpp) extra="-O3 -fno-math-errno -ffp-contract=fast" ;;
         *) extra="-O3 -fno-math-errno" ;;
     esac
     exec "$3" c++ '"$CXX_FLAGS"' $extra -c "$src" -o "$out"

@@ -86,7 +86,7 @@ void model1::reset()
 	m_clock_held = false;                    // (No time limit: a round held at the reset is over)
 	m_run_on = false; m_run_idle = 0; m_fought.clear(); m_built_run.clear(); m_cpu_akira.clear();   // (a new game: no run's fighters carried into it)
 	random_fighter_hold_moves();
-	for (auto &c : m_layer_cache) c.frame = ~0ull;   // a new game: nothing drawn is current
+	for (auto &c : m_layer_cache) { c.ver = ~0ull; c.y0 = 0; c.y1 = SCREEN_H; }   // a new game: nothing drawn is current
 	m_shown = m_unshown = false;                      // nor shown
 	m_tiles_updated = ~0ull;
 	m_list_written[0] = m_list_written[1] = ~0ull;
@@ -165,7 +165,7 @@ void model1::run_frame()
 	}
 
 	// the picture on screen was drawn from the state this frame is about to change: keep that
-	if (m_smooth && m_shown && m_shown_frame == m_frame) {
+	if (m_smooth && m_shown && m_shown_frame == m_frame && !m_external_gpu) {
 		if (m_ext_render_wait) m_ext_render_wait();
 		keep_still();
 	}
@@ -3374,14 +3374,25 @@ model1::layer_cache &model1::cached_layer(int layer, int flags)
 	constexpr uint32_t KEY = 0xff000000;
 	layer_cache &c = m_layer_cache[layer & 7];
 	const int tw = SCREEN_W + 2 * m_ext;
-	if (c.frame != m_frame || c.flags != flags || c.ext != m_ext || c.px.width() != tw) {
-		if (c.px.width() != tw) c.px.allocate(tw, SCREEN_H);
-		c.px.fill(KEY);
+	const uint64_t ver = m_tiles.map_ver[(layer >> 1) & 3] ^ (m_tiles.char_gen * 0x9e3779b97f4a7c15ull) ^ (m_pens_gen * 0xbf58476d1ce4e5b9ull);
+	if (c.ver != ver || c.flags != flags || c.ext != m_ext || c.px.width() != tw) {
+		if (c.px.width() != tw) {
+			c.px.allocate(tw, SCREEN_H);
+			c.px.fill(KEY);
+			c.x0.assign(SCREEN_H, 0);
+			c.x1.assign(SCREEN_H, 0);
+		} else {
+			for (int y = std::max(0, c.y0); y < std::min(SCREEN_H, c.y1); y++) {
+				if (c.x0[y] < c.x1[y]) std::fill_n(&c.px.pix(y) + c.x0[y], c.x1[y] - c.x0[y], KEY);
+				c.x0[y] = 0;
+				c.x1[y] = 0;
+			}
+		}
 		if (!m_layers_together) m_tiles.m_ox = m_ext;     // (else set for them all)
 		m_tiles.draw(c.px, c.px.cliprect(), layer, 0, flags);
 		if (!m_layers_together) m_tiles.m_ox = 0;
-		c.x0.assign(SCREEN_H, 0);
-		c.x1.assign(SCREEN_H, 0);
+		c.y0 = SCREEN_H;
+		c.y1 = 0;
 		for (int y = 0; y < SCREEN_H; y++) {
 			const uint32_t *r = &c.px.pix(y);
 			int a = 0, b = tw;
@@ -3389,8 +3400,10 @@ model1::layer_cache &model1::cached_layer(int layer, int flags)
 			if (a == tw) continue;
 			while (b > a && r[b - 1] == KEY) b--;
 			c.x0[y] = int16_t(a); c.x1[y] = int16_t(b);
+			if (y < c.y0) c.y0 = y;
+			c.y1 = y + 1;
 		}
-		c.frame = m_frame; c.flags = flags; c.ext = m_ext; c.gen++;
+		c.ver = ver; c.flags = flags; c.ext = m_ext; c.gen++;
 	}
 	return c;
 }
@@ -3398,14 +3411,16 @@ model1::layer_cache &model1::cached_layer(int layer, int flags)
 // This frame's layers but the sky, each on a thread of its own (they don't depend on one another).
 void model1::prepare_layers()
 {
-	if (m_scale == 1 && m_ext == 0) return;          // (the arcade's picture draws them straight in)
+	if (m_scale == 1 && m_ext == 0 && !m_parts) return;          // (the arcade's picture draws them straight in)
 	static const int LAYERS[] = { 6, 2, 0, 7, 5, 3, 1 };
 	int todo[7], n = 0;
 	const int tw = SCREEN_W + 2 * m_ext;
+	const uint64_t base_ver = (m_tiles.char_gen * 0x9e3779b97f4a7c15ull) ^ (m_pens_gen * 0xbf58476d1ce4e5b9ull);
 	for (int l : LAYERS) {
 		const int flags = l == 6 ? segas24_tile::DRAW_OPAQUE : 0;
 		const layer_cache &c = m_layer_cache[l];
-		if (c.frame != m_frame || c.flags != flags || c.ext != m_ext || c.px.width() != tw) todo[n++] = l;
+		const uint64_t ver = m_tiles.map_ver[(l >> 1) & 3] ^ base_ver;
+		if (c.ver != ver || c.flags != flags || c.ext != m_ext || c.px.width() != tw) todo[n++] = l;
 	}
 	if (n < 2) return;
 	m_work.layers += n;
@@ -3421,7 +3436,7 @@ void model1::draw_tiles(bitmap_rgb32 &bitmap, const rectangle &cliprect, int lay
 {
 	static const int skip = getenv("VF_TILE_SKIP") ? strtol(getenv("VF_TILE_SKIP"), nullptr, 16) : 0;
 	if (skip & (1 << layer)) return;
-	if (m_scale == 1 && m_ext == 0 && !(layer == 4 && m_fc_live)) {   // (the free camera's sky: the panorama, below)
+	if (m_scale == 1 && m_ext == 0 && !m_parts && !(layer == 4 && m_fc_live)) {   // (the free camera's sky: the panorama, below)
 		m_tiles.m_ox = 0;
 		m_tiles.draw(bitmap, cliprect, layer, 0, flags);
 		return;
@@ -3435,7 +3450,10 @@ void model1::draw_tiles(bitmap_rgb32 &bitmap, const rectangle &cliprect, int lay
 		// frame; which panorama and where, every time)
 		if (m_skies.empty()) init_skies();
 		sky = !m_skies.empty() && m_wide_frame;
-		if (m_l4_frame != m_frame || m_l4_ext != m_ext || m_l4_coords != sky || m_tile_tmp.width() != SCREEN_W + 2 * m_ext) {
+		const uint64_t ver4 = m_tiles.map_ver[2] ^ (m_tiles.char_gen * 0x9e3779b97f4a7c15ull) ^ (m_pens_gen * 0xbf58476d1ce4e5b9ull);
+		if (m_l4_frame != ver4 || m_l4_ext != m_ext || m_l4_coords != sky || m_tile_tmp.width() != SCREEN_W + 2 * m_ext) {
+			if (m_tile_tmp.width() != SCREEN_W + 2 * m_ext || m_tile_tmp.height() != SCREEN_H)
+				m_tile_tmp.allocate(SCREEN_W + 2 * m_ext, SCREEN_H);
 			m_tile_tmp.fill(KEY);
 			m_tiles.m_ox = m_ext;
 			if (sky) {
@@ -3445,7 +3463,7 @@ void model1::draw_tiles(bitmap_rgb32 &bitmap, const rectangle &cliprect, int lay
 			m_tiles.draw(m_tile_tmp, m_tile_tmp.cliprect(), layer, 0, flags);
 			m_tiles.m_coord = nullptr;
 			m_tiles.m_ox = 0;
-			m_l4_frame = m_frame; m_l4_ext = m_ext; m_l4_coords = sky; m_l4_gen++;
+			m_l4_frame = ver4; m_l4_ext = m_ext; m_l4_coords = sky; m_l4_gen++;
 		}
 		if (sky) find_sky();
 	} else {

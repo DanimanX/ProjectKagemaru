@@ -780,7 +780,7 @@ private:
 	// each layer at arcade resolution, kept for the game frame it was drawn for: smooth motion draws
 	// several pictures a frame and the tiles only change with the frame. With each row's drawn span,
 	// so the scaling skips what's empty (the HUD and text layers are mostly empty).
-	struct layer_cache { uint64_t frame = ~0ull; int flags = -1, ext = -1; bitmap_rgb32 px; std::vector<int16_t> x0, x1; uint64_t gen = 0; };
+	struct layer_cache { uint64_t ver = ~0ull; int flags = -1, ext = -1; int y0 = 0, y1 = 384; bitmap_rgb32 px; std::vector<int16_t> x0, x1; uint64_t gen = 0; };
 	// the sky layer as last drawn (once a game frame, as the others; its panorama placing every time)
 	uint64_t m_l4_frame = ~0ull; int m_l4_ext = -1; bool m_l4_coords = false; uint64_t m_l4_gen = 0;
 	// The GPU's parts (model1_gpu.cpp)
@@ -905,6 +905,7 @@ private:
 	uint32_t *m_poly_rom, *m_copro_tables;
 	uint32_t m_bank_base = 0x1000000;
 	uint32_t m_pens[0x2000]{};
+	uint64_t m_pens_gen = 1;
 
 	uint16_t bus_read16(uint32_t a);
 	// The main board's i8251 to the sound board: 31250 baud, 10 bits a byte.
@@ -1341,7 +1342,12 @@ private:
 		model1 &m;
 		uint32_t pen(int i) const { return m.m_pens[i & 0x1fff]; }
 		uint32_t black_pen() const { return 0; }
-		void set_pen_color(int i, int r, int g, int b) { m.m_pens[i & 0x1fff] = (r << 16) | (g << 8) | b; }
+		void set_pen_color(int i, int r, int g, int b)
+		{
+			const uint32_t rgb = (uint32_t(r) << 16) | (uint32_t(g) << 8) | uint32_t(b);
+			uint32_t &p = m.m_pens[i & 0x1fff];
+			if (p != rgb) { p = rgb; m.m_pens_gen++; }
+		}
 	} m_palette_obj{*this};
 	palette_t *m_palette = &m_palette_obj;
 	struct screen_t

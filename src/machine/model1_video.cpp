@@ -722,7 +722,9 @@ void model1::sort_quads() const
 	{
 		m_quadind[i] = &m_quaddb[i];
 	}
-	qsort(&m_quadind[0], count, sizeof(model1::quad_t*), comp_quads);
+	std::sort(&m_quadind[0], &m_quadind[count], [](const model1::quad_t *a, const model1::quad_t *b) {
+		return a->z != b->z ? a->z > b->z : a < b;
+	});
 }
 
 void model1::unsort_quads() const
@@ -1557,8 +1559,6 @@ void model1::push_object(uint32_t tex_adr, uint32_t poly_adr, uint32_t size, flo
 
 		int link = (flags >> 8) & 3;
 
-		m_view->transform_vector(vn);
-
 		m_view->transform_point(p0);
 		m_view->transform_point(p1);
 		if (m_fc_obj) { free_cam_point(p0); free_cam_point(p1); }   // (its normal stays the game's view's: lit as the game lights it)
@@ -1604,6 +1604,7 @@ void model1::push_object(uint32_t tex_adr, uint32_t poly_adr, uint32_t size, flo
 		if (!(flags & 0x00004000) && view_determinant(old_p1, old_p0, p0) > 0)
 			goto next;
 
+		m_view->transform_vector(vn);
 		vn = glm::normalize(vn);
 
 		cquad.p[0] = old_p1;
@@ -1659,7 +1660,7 @@ void model1::push_object(uint32_t tex_adr, uint32_t poly_adr, uint32_t size, flo
 			// (that frame's matrix and light) and the two colours mixed, so a turning model's shades
 			// glide instead of stepping from one frame's to the next's partway, exact at each frame.
 			int lum_from = -1, lum_to = -1;
-			if (m_shade_from && m_alpha < 1) {
+			if (m_shade_from && m_alpha < 1 && !m_external_gpu) {
 				auto turned = [&](const float *t) {
 					const glm::vec3 r1(t[0], t[3], t[6]), r2(t[1], t[4], t[7]), r3(t[2], t[5], t[8]);
 					return glm::normalize(glm::vec3(glm::dot(vn_model, r1), glm::dot(vn_model, r2), glm::dot(vn_model, r3)));
@@ -2603,27 +2604,26 @@ void model1::tgp_render(bitmap_rgb32 &bitmap, const rectangle &cliprect, render_
 
 void model1::tgp_scan()
 {
-#if 0
-	if (machine().input().code_pressed_once(KEYCODE_F)) {
-		FILE *fp;
-		fp = fopen("tgp-ram.bin", "w+b");
-		if (fp) {
-			fwrite(m_tgp_ram, (0x100000 - 0x40000) * 2, 1, fp);
-			fclose(fp);
-		}
-		exit(0);
-	}
-#endif
 	if (!m_render_done && (m_listctl[1] & 0x1f) == 0x1f)
 	{
-		set_current_render_list();
-		// Skip everything but the data uploads
-		M1_LOG(LOG_TGP, "VIDEO: scan list %d\n", get_list_number());
+		const uint16_t *const scan_list = (listctl_now() & 0x40) ? m_display_list1 : m_display_list0;
+		auto s_readi16 = [&](int adr) -> uint16_t { return scan_list[adr & 0x7fff]; };
+		auto s_readi = [&](int adr) -> int32_t { return int32_t(uint32_t(s_readi16(adr)) | (uint32_t(s_readi16(adr + 1)) << 16)); };
+		auto s_skip_direct = [&](int list_offset) -> int {
+			list_offset += 18;
+			for (;;) {
+				int flags = s_readi(list_offset + 2);
+				int type = flags & 3;
+				if (!type) break;
+				list_offset += (type == 2) ? 12 : 20;
+			}
+			return list_offset + 4;
+		};
 
 		int list_offset = 0;
-		for (;;)
+		for (int guard = 0; guard < 0x10000; guard++)
 		{
-			int type = readi(list_offset + 0);
+			int type = s_readi(list_offset + 0);
 			switch (type) {
 				case 0:
 					list_offset += 2;
@@ -2633,59 +2633,55 @@ void model1::tgp_scan()
 					list_offset += 8;
 					break;
 				case 2:
-					list_offset = skip_direct(list_offset);
-
+					list_offset = s_skip_direct(list_offset);
 					break;
 				case 3:
 					list_offset += 16;
 					break;
 				case 4:
 				{
-					int adr = readi(list_offset + 2);
-					int len = readi(list_offset + 4) + 1;
-					M1_LOG(LOG_TGP, "ZVIDEO:   scan color write, adr=%x, len=%x\n", adr, len);
-					for (int i = 0; i<len; i++)
-					{
-						m_tgp_ram[adr - 0x40000 + i] = readi16(list_offset + 6 + 2 * i);
+					int adr = s_readi(list_offset + 2);
+					int len = s_readi(list_offset + 4) + 1;
+					if (adr >= 0x40000 && adr + len <= 0x100000) {
+						for (int i = 0; i < len; i++)
+							m_tgp_ram[adr - 0x40000 + i] = s_readi16(list_offset + 6 + 2 * i);
 					}
 					list_offset += 6 + len * 2;
 					break;
 				}
 				case 5:
 				{
-					int adr = readi(list_offset + 2);
-					int len = readi(list_offset + 4);
-					for (int i = 0; i < len; i++)
-					{
-						m_poly_ram[adr - 0x800000 + i] = readi(list_offset + 2 * i + 6);
+					int adr = s_readi(list_offset + 2);
+					int len = s_readi(list_offset + 4);
+					if (adr >= 0x800000 && adr + len <= 0xc00000) {
+						for (int i = 0; i < len; i++)
+							m_poly_ram[adr - 0x800000 + i] = s_readi(list_offset + 2 * i + 6);
 					}
 					list_offset += 6 + len * 2;
 					break;
 				}
 				case 6:
 				{
-					int adr = readi(list_offset + 2);
-					int len = readi(list_offset + 4);
-					//M1_LOG(LOG_TGP, "VIDEO:   upload data, adr=%x, len=%x\n", adr, len);
-					for (int i = 0; i<len; i++)
+					int adr = s_readi(list_offset + 2);
+					int len = s_readi(list_offset + 4);
+					for (int i = 0; i < len; i++)
 					{
-						int v = readi(list_offset + 6 + i * 2);
+						if (unsigned(i + adr) >= 256) break;
+						int v = s_readi(list_offset + 6 + i * 2);
 						m_view->lightparams[i + adr].d = (float(v & 0xff)) / 255.0f;
 						m_view->lightparams[i + adr].a = (float((v >> 8) & 0xff)) / 255.0f;
 						m_view->lightparams[i + adr].s = (float((v >> 16) & 0xff)) / 255.0f;
 						m_view->lightparams[i + adr].p = (v >> 24) & 0xff;
-						//M1_LOG(LOG_TGP, "         %02X\n",v);
 					}
 					list_offset += 6 + len * 2;
 					break;
 				}
 				case 7:
-					list_offset += 4;
-					break;
 				case 8:
 					list_offset += 4;
 					break;
 				case 9:
+				case 0xc:
 					list_offset += 6;
 					break;
 				case 0xa:
@@ -2694,14 +2690,10 @@ void model1::tgp_scan()
 				case 0xb:
 					list_offset += 26;
 					break;
-				case 0xc:
-					list_offset += 6;
-					break;
 				case 0xf:
 				case -1:
 					goto end;
 				default:
-					M1_LOG(LOG_TGP, "VIDEO:   unknown type %d\n", type);
 					goto end;
 			}
 		}

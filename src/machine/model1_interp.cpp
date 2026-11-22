@@ -145,6 +145,7 @@ void model1::record_frame()
 	if (objects == 0) {
 		// nothing in 3D (a curtain, a 2D screen): the next scene starts afresh, not blended from this
 		m_logic[0] = m_logic[1] = m_logic_prev = logic_frame{};
+		if (m_external_gpu) return;
 		// (when the host puts pictures together on the GPU: drawn in parts, so the 2D screens and
 		// curtains don't cost a whole picture drawn at the render scale and uploaded every frame)
 		if (m_parts_mode) render_parts(double(m_frame), m_own_parts, false);
@@ -578,7 +579,8 @@ void model1::blend_slots(const logic_frame &a, const logic_frame &b, double alph
 	if (a.slots.empty()) return;
 	// pair the slots in order, like a diff: the same first model pairs; a different model in the
 	// same place (a hand, a face swapped) pairs too; slots that appeared or went are skipped
-	std::vector<int> pair(b.slots.size(), -1);
+	static thread_local std::vector<int> pair;
+	pair.assign(b.slots.size(), -1);
 	auto first = [](const slot &sl) { return sl.polys.empty() ? 0u : sl.polys[0]; };
 	size_t i = 0, j = 0;
 	const size_t na = a.slots.size(), nb = b.slots.size();
@@ -587,7 +589,8 @@ void model1::blend_slots(const logic_frame &a, const logic_frame &b, double alph
 		return double(pb[9] - pa[9]) * (pb[9] - pa[9]) + double(pb[10] - pa[10]) * (pb[10] - pa[10]) + double(pb[11] - pa[11]) * (pb[11] - pa[11]);
 	};
 	int repaired = 0;
-	std::vector<char> changed_run(nb, 0);       // slots of a run that changed length
+	static thread_local std::vector<char> changed_run;       // slots of a run that changed length
+	changed_run.assign(nb, 0);
 	while (i < na && j < nb) {
 		if (first(a.slots[i]) == first(b.slots[j])) {
 			// A run of slots of one model (copies of a piece of scenery): when one of them came or

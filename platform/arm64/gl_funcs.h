@@ -93,6 +93,7 @@ inline constexpr GLenum GL_LINK_STATUS = 0x8B82u;
     X(void, glDeleteProgram, (GLuint)) \
     X(void, glDeleteShader, (GLuint)) \
     X(void, glDeleteTextures, (GLsizei, const GLuint *)) \
+    X(void, glDepthFunc, (GLenum)) \
     X(void, glDepthMask, (GLboolean)) \
     X(void, glDisable, (GLenum)) \
     X(void, glDrawArrays, (GLenum, GLint, GLsizei)) \
@@ -133,6 +134,10 @@ struct GlFuncs {
 #define ARM64_GL_FIELD(ret, name, args) ret (APIENTRY *name) args = nullptr;
     ARM64_GL_FUNCS(ARM64_GL_FIELD)
 #undef ARM64_GL_FIELD
+    void (APIENTRY *glClearDepthf)(GLfloat) = nullptr;
+    void (APIENTRY *glClearDepth)(GLdouble) = nullptr;
+    void (APIENTRY *glDepthRangef)(GLfloat, GLfloat) = nullptr;
+    void (APIENTRY *glDepthRange)(GLdouble, GLdouble) = nullptr;
 
     bool load() {
         bool ok = true;
@@ -141,7 +146,20 @@ struct GlFuncs {
         if (!name) ok = false;
         ARM64_GL_FUNCS(ARM64_GL_LOAD)
 #undef ARM64_GL_LOAD
+        glClearDepthf = reinterpret_cast<void (APIENTRY *)(GLfloat)>(SDL_GL_GetProcAddress("glClearDepthf"));
+        glClearDepth = reinterpret_cast<void (APIENTRY *)(GLdouble)>(SDL_GL_GetProcAddress("glClearDepth"));
+        glDepthRangef = reinterpret_cast<void (APIENTRY *)(GLfloat, GLfloat)>(SDL_GL_GetProcAddress("glDepthRangef"));
+        glDepthRange = reinterpret_cast<void (APIENTRY *)(GLdouble, GLdouble)>(SDL_GL_GetProcAddress("glDepthRange"));
         return ok;
+    }
+
+    void clear_depth(float d) const {
+        if (glClearDepthf) glClearDepthf(d);
+        else if (glClearDepth) glClearDepth(GLdouble(d));
+    }
+    void depth_range(float n, float f) const {
+        if (glDepthRangef) glDepthRangef(n, f);
+        else if (glDepthRange) glDepthRange(GLdouble(n), GLdouble(f));
     }
 };
 

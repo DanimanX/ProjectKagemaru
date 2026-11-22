@@ -221,7 +221,7 @@ bool model1::load_state(const uint8_t *p, size_t n)
 	if (!r.done()) return false;
 	// what's made from the board: the pens from the palette, and the 2D decoded again
 	for (int i = 0; i < 0x2000; i++) model1_paletteram_w(offs_t(i), m_paletteram16[i], 0xffff);
-	for (auto &c : m_layer_cache) c.frame = ~0ull;
+	for (auto &c : m_layer_cache) { c.ver = ~0ull; c.y0 = 0; c.y1 = SCREEN_H; }
 	m_tiles_updated = ~0ull;
 	return true;
 }

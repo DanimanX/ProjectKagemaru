@@ -172,10 +172,25 @@ void model1::parts_composite(bitmap_rgb32 &out, uint64_t &key, uint64_t &gen, st
 	key = k;
 	static thread_local bitmap_rgb32 made;
 	if (made.width() != tw) made.allocate(tw, SCREEN_H);
-	made.fill(KEY);
+	int y0 = SCREEN_H, y1 = 0;
 	for (int l : layers) {
 		const layer_cache &c = m_layer_cache[l & 7];
+		if (c.y0 < y0) y0 = c.y0;
+		if (c.y1 > y1) y1 = c.y1;
+	}
+	y0 = std::max(0, y0);
+	y1 = std::min(SCREEN_H, y1);
+	if (out.width() != tw) {
+		made.fill(KEY);
+	} else {
 		for (int y = 0; y < SCREEN_H; y++) {
+			std::fill_n(&made.pix(y), tw, KEY);
+		}
+	}
+	for (int l : layers) {
+		const layer_cache &c = m_layer_cache[l & 7];
+		if (c.y0 >= c.y1) continue;
+		for (int y = std::max(0, c.y0); y < std::min(SCREEN_H, c.y1); y++) {
 			if (c.x0[y] >= c.x1[y]) continue;
 			const uint32_t *src = &c.px.pix(y);
 			uint32_t *d = &made.pix(y);
@@ -192,7 +207,6 @@ void model1::parts_composite(bitmap_rgb32 &out, uint64_t &key, uint64_t &gen, st
 			}
 		}
 	}
-	if (out.width() == tw && !memcmp(&out.pix(0), &made.pix(0), size_t(tw) * SCREEN_H * 4)) return;
 	std::swap(out, made);
 	gen++;
 }

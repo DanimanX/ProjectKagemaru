@@ -188,6 +188,14 @@ public:
             if (btn(SDL_CONTROLLER_BUTTON_START)) buttons |= Start;
             if (btn(SDL_CONTROLLER_BUTTON_BACK)) buttons |= Select;
             if (btn(SDL_CONTROLLER_BUTTON_GUIDE)) buttons |= Guide;
+            SDL_Joystick *j = SDL_GameControllerGetJoystick(c);
+            if (j && SDL_JoystickNumHats(j) > 0) {
+                const Uint8 hat = SDL_JoystickGetHat(j, 0);
+                if (hat & SDL_HAT_UP) buttons |= Up;
+                if (hat & SDL_HAT_DOWN) buttons |= Down;
+                if (hat & SDL_HAT_LEFT) buttons |= Left;
+                if (hat & SDL_HAT_RIGHT) buttons |= Right;
+            }
             const int dead = 8000;
             const int lx = SDL_GameControllerGetAxis(c, SDL_CONTROLLER_AXIS_LEFTX);
             const int ly = SDL_GameControllerGetAxis(c, SDL_CONTROLLER_AXIS_LEFTY);
@@ -255,6 +263,12 @@ private:
             if (!ctrl_[0]) {
                 ctrl_[0] = c;
                 if (joy0_) { SDL_JoystickClose(joy0_); joy0_ = nullptr; }
+                SDL_Joystick *j = SDL_GameControllerGetJoystick(c);
+                std::fprintf(stderr, "[ProjectKagemaru] Pad 0 (GameController): %s (hats=%d axes=%d btns=%d)\n",
+                             SDL_GameControllerName(c) ? SDL_GameControllerName(c) : "?",
+                             j ? SDL_JoystickNumHats(j) : -1,
+                             j ? SDL_JoystickNumAxes(j) : -1,
+                             j ? SDL_JoystickNumButtons(j) : -1);
             } else if (!ctrl_[1]) {
                 ctrl_[1] = c;
             } else {
@@ -262,7 +276,14 @@ private:
             }
             return;
         }
-        if (!ctrl_[0] && !joy0_) joy0_ = SDL_JoystickOpen(index);
+        if (!ctrl_[0] && !joy0_) {
+            joy0_ = SDL_JoystickOpen(index);
+            if (joy0_) {
+                std::fprintf(stderr, "[ProjectKagemaru] Pad 0 (Joystick): %s (hats=%d axes=%d btns=%d)\n",
+                             SDL_JoystickName(joy0_) ? SDL_JoystickName(joy0_) : "?",
+                             SDL_JoystickNumHats(joy0_), SDL_JoystickNumAxes(joy0_), SDL_JoystickNumButtons(joy0_));
+            }
+        }
     }
 
     SDL_GameController *ctrl_[2] = {nullptr, nullptr};

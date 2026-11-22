@@ -9,6 +9,16 @@ class segas24_tile
 public:
 	enum { DRAW_OPAQUE = 0x10000 };
 
+	struct row_range {
+		int y0 = 384, y1 = 0;
+		void add_span(int a, int b) {
+			if (a < b) {
+				if (a < y0) y0 = a;
+				if (b > y1) y1 = b;
+			}
+		}
+	};
+
 	segas24_tile() : char_ram(0x80000 / 2), tile_ram(0x10000 / 2) {}
 
 	uint16_t tile_r(offs_t o) const { return tile_ram[o & 0x7fff]; }
@@ -21,7 +31,23 @@ public:
 		const uint16_t v = (tile_ram[o] & ~m) | (d & m);
 		if (v == tile_ram[o]) return;
 		tile_ram[o] = v;
-		if (o < 0x4000) { m_entry_dirty[o] = 1; m_entries_dirty = true; }
+		tile_version++;
+		if (o < 0x4000) {
+			m_entry_dirty[o] = 1;
+			m_entries_dirty = true;
+			map_ver[o >> 12]++;
+		} else if (o < 0x4800) {
+			map_ver[(o - 0x4000) >> 9]++;
+		} else if (o >= 0x5000 && o < 0x5010) {
+			if ((o & 7) < 4) map_ver[o & 3]++;
+			else for (int i = 0; i < 4; i++) map_ver[i]++;
+		} else if (o >= 0x6000 && o < 0x6800) {
+			map_ver[0]++; map_ver[1]++;
+		} else if (o >= 0x6800 && o < 0x7000) {
+			map_ver[2]++; map_ver[3]++;
+		} else {
+			for (int i = 0; i < 4; i++) map_ver[i]++;
+		}
 	}
 	void char_w(offs_t o, uint16_t d, uint16_t m)
 	{
@@ -37,14 +63,16 @@ public:
 	// maps are all decoded again at the next update). char_gen counts the tile graphics' changes, so
 	// a copy of them is made only when they changed.
 	uint64_t char_gen = 0;
-	void swap_rams(std::vector<uint16_t> &tiles, std::vector<uint16_t> &chars) { tile_ram.swap(tiles); char_ram.swap(chars); m_dirty = true; }
-	void clear() { std::fill(tile_ram.begin(), tile_ram.end(), 0); std::fill(char_ram.begin(), char_ram.end(), 0); m_dirty = true; char_gen++; }   // (power_on)
+	uint64_t tile_version = 1;
+	uint64_t map_ver[4] = {1, 1, 1, 1};
+	void swap_rams(std::vector<uint16_t> &tiles, std::vector<uint16_t> &chars) { tile_ram.swap(tiles); char_ram.swap(chars); m_dirty = true; tile_version++; for (int i = 0; i < 4; i++) map_ver[i]++; }
+	void clear() { std::fill(tile_ram.begin(), tile_ram.end(), 0); std::fill(char_ram.begin(), char_ram.end(), 0); m_dirty = true; char_gen++; tile_version++; for (int i = 0; i < 4; i++) map_ver[i]++; }   // (power_on)
 	// The save state (model1::state): both RAMs; after a load every map entry and tile is decoded again
 	template <class IO> void state(IO &io)
 	{
 		io.vec(tile_ram);
 		io.vec(char_ram);
-		if (IO::loading) { m_dirty = true; char_gen++; }
+		if (IO::loading) { m_dirty = true; char_gen++; tile_version++; for (int i = 0; i < 4; i++) map_ver[i]++; }
 	}
 
 	// One map as a 512x512 picture (after update()), for exporting the artwork.
@@ -81,17 +109,25 @@ public:
 			m_dirty = true;
 		}
 		if (m_dirty) {
+			m_dirty = m_entries_dirty = m_chars_dirty = false;
+			std::fill(m_entry_dirty.begin(), m_entry_dirty.end(), 0);
+			std::fill(m_char_dirty.begin(), m_char_dirty.end(), 0);
 			for (int e = 0; e < 0x4000; e++) decode_entry(e);
 		} else if (m_entries_dirty || m_chars_dirty) {
-			if (m_chars_dirty)
+			const bool chars = m_chars_dirty;
+			m_entries_dirty = m_chars_dirty = false;
+			if (chars) {
 				for (int e = 0; e < 0x4000; e++)
 					if (m_char_dirty[(tile_ram[e] & tile_mask) & 0x3fff]) m_entry_dirty[e] = 1;
-			for (int e = 0; e < 0x4000; e++)
-				if (m_entry_dirty[e]) decode_entry(e);
+				std::fill(m_char_dirty.begin(), m_char_dirty.end(), 0);
+			}
+			for (int e = 0; e < 0x4000; e++) {
+				if (m_entry_dirty[e]) {
+					m_entry_dirty[e] = 0;
+					decode_entry(e);
+				}
+			}
 		}
-		if (m_dirty || m_entries_dirty) std::fill(m_entry_dirty.begin(), m_entry_dirty.end(), 0);
-		if (m_dirty || m_chars_dirty) std::fill(m_char_dirty.begin(), m_char_dirty.end(), 0);
-		m_dirty = m_entries_dirty = m_chars_dirty = false;
 	}
 
 	void draw(bitmap_rgb32 &bitmap, const rectangle &cliprect, int layer, int lpri, int flags_in)
