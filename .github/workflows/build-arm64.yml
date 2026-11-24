@@ -108,7 +108,7 @@ jobs:
           else
             cat dist/notes-tail.md > dist/release-notes.md
           fi
-          TITLE="ProjectKagemaru $TAG (ARM64 / Anbernic RG34XX PortMaster)"
+          TITLE="ProjectKagemaru $TAG (ARM64 / PortMaster + Vulkan)"
           if gh release view "$TAG" >/dev/null 2>&1; then
             # Re-running on a tag that already has a release: replace the assets, then force
             # the release back to published. Moving a tag (the way a release is rebuilt onto
