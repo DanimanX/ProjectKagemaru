@@ -126,8 +126,29 @@ if command -v ninja >/dev/null 2>&1; then
     CMAKE_GEN_ARGS=(-G Ninja)
 fi
 
+# Every one of these backends is dlopen()ed at runtime, so the build only needs its
+# headers plus a .so CMake can see. But CMake resolves find_library() against the
+# *host* triplet, and while cross-compiling for aarch64-linux-gnu on a Debian/Ubuntu
+# multiarch host it searches /usr/lib/aarch64-linux-gnu, which does not exist there:
+# libX11.so and libasound.so live in /usr/lib/x86_64-linux-gnu. find_package(X11)
+# therefore fails on the CI runner and SDL3 aborts the configure with "could not
+# find X11 or Wayland development libraries". Point find_library() back at the host
+# triplet directory; nothing target-side is linked from it, because the shared-loading
+# options above keep those libraries out of the link line.
+CMAKE_HOST_ARGS=()
+HOST_TRIPLET="$(cc -dumpmachine 2>/dev/null || true)"
+if [ -z "$HOST_TRIPLET" ]; then
+    case "$HOST_ARCH" in
+        x86_64|amd64) HOST_TRIPLET="x86_64-linux-gnu" ;;
+        aarch64|arm64) HOST_TRIPLET="aarch64-linux-gnu" ;;
+    esac
+fi
+if [ -n "$HOST_TRIPLET" ] && [ -d "/usr/lib/$HOST_TRIPLET" ]; then
+    CMAKE_HOST_ARGS+=("-DCMAKE_LIBRARY_PATH=/usr/lib/$HOST_TRIPLET")
+fi
+
 if [ ! -f "$BDIR/sdl3-build/libSDL3.a" ]; then
-    cmake -S "$EXTERN/sdl3" -B "$BDIR/sdl3-build" "${CMAKE_GEN_ARGS[@]}" \
+    cmake -S "$EXTERN/sdl3" -B "$BDIR/sdl3-build" "${CMAKE_GEN_ARGS[@]}" "${CMAKE_HOST_ARGS[@]}" \
         -DCMAKE_SYSTEM_NAME=Linux \
         -DCMAKE_SYSTEM_PROCESSOR=aarch64 \
         -DCMAKE_BUILD_TYPE=Release \
@@ -164,6 +185,23 @@ if [ ! -f "$BDIR/sdl3-build/libSDL3.a" ]; then
         -DSDL_EXAMPLES=OFF
     cmake --build "$BDIR/sdl3-build" --target SDL3-static --parallel "$JOBS"
 fi
+
+# The published runtime is only usable on a handheld if SDL3 kept the backends the
+# source tree is built with locally. A silently downgraded configure (the X11 case
+# this guard was added for) would otherwise ship a package with no window backend at
+# all, so turn that into a build failure here instead of at runtime.
+SDL3_CONFIG="$(find "$BDIR/sdl3-build" -name SDL_build_config.h -path '*build_config*' 2>/dev/null | head -1)"
+if [ -z "$SDL3_CONFIG" ]; then
+    echo "ERROR: SDL3 build config header not found under $BDIR/sdl3-build" >&2
+    exit 1
+fi
+for drv in SDL_VIDEO_DRIVER_X11 SDL_VIDEO_DRIVER_WAYLAND \
+           SDL_AUDIO_DRIVER_ALSA SDL_AUDIO_DRIVER_PULSEAUDIO SDL_AUDIO_DRIVER_PIPEWIRE; do
+    if ! grep -q "^#define $drv 1" "$SDL3_CONFIG"; then
+        echo "ERROR: SDL3 was built without $drv (see the configure summary above)" >&2
+        exit 1
+    fi
+done
 SDL3_INC="$EXTERN/sdl3/include"
 SDL3_LIB="$BDIR/sdl3-build/libSDL3.a"
 

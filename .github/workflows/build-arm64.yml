@@ -34,37 +34,46 @@ jobs:
         run: |
           sudo apt-get -o Acquire::Retries=3 update -q
           sudo apt-get -o Acquire::Retries=3 install -qy --no-install-recommends \
-            build-essential python3 curl git tar xz-utils zip file binutils
+            build-essential cmake ninja-build python3 curl git tar xz-utils zip file binutils \
+            libwayland-dev libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxfixes-dev \
+            libxi-dev libxss-dev libxtst-dev libxkbcommon-dev libdrm-dev libgbm-dev libegl-dev \
+            libasound2-dev libpulse-dev libpipewire-0.3-dev
 
-      - name: Cache cross-compile dependencies (Zig, SDL2 headers, zlib, Dear ImGui)
+      - name: Cache cross-compile dependencies (Zig, SDL2 headers, SDL3, zlib, Dear ImGui)
         uses: actions/cache@v4
         with:
           path: |
             deps
             extern
             !deps/zig-cache
-          key: projectkagemaru-deps-${{ hashFiles('tools/build-arm64.sh') }}
+          key: projectkagemaru-deps-${{ hashFiles('tools/build-arm64.sh', 'tools/build-arm64-vulkan.sh') }}
 
-      - name: Cross-compile AArch64 runtime and assemble PortMaster package
+      - name: Cross-compile AArch64 runtime and assemble PortMaster + Vulkan packages
         env:
           TARGET_CPU: ${{ github.event.inputs.target_cpu || 'cortex_a53' }}
         run: |
-          chmod +x tools/build-arm64.sh tools/build-host-test.sh portmaster/*.sh
+          chmod +x tools/build-arm64.sh tools/build-arm64-vulkan.sh tools/build-host-test.sh portmaster/*.sh
           tools/build-arm64.sh
           (cd dist && sha256sum ProjectKagemaru-PortMaster-aarch64.zip > ProjectKagemaru-PortMaster-aarch64.zip.sha256)
+          # The Vulkan runtime links a static SDL3, so its -mcpu is independent of the
+          # PortMaster build; keep it generic so one Vulkan binary covers every target.
+          TARGET_CPU=generic tools/build-arm64-vulkan.sh
+          (cd dist && sha256sum ProjectKagemaru-Vulkan-aarch64.zip > ProjectKagemaru-Vulkan-aarch64.zip.sha256)
           ls -lh dist/
 
       - name: Run ROM-free synthetic SLJIT + SoundWorker + 3D export verification
         run: |
           tools/build-host-test.sh 60
 
-      - name: Upload PortMaster artifact
+      - name: Upload PortMaster and Vulkan artifacts
         uses: actions/upload-artifact@v4
         with:
           name: ProjectKagemaru-PortMaster-aarch64
           path: |
             dist/ProjectKagemaru-PortMaster-aarch64.zip
             dist/ProjectKagemaru-PortMaster-aarch64.zip.sha256
+            dist/ProjectKagemaru-Vulkan-aarch64.zip
+            dist/ProjectKagemaru-Vulkan-aarch64.zip.sha256
 
       - name: Publish GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
@@ -72,26 +81,44 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
         run: |
-          FILES="dist/ProjectKagemaru-PortMaster-aarch64.zip dist/ProjectKagemaru-PortMaster-aarch64.zip.sha256"
-          cat > dist/release-notes.md <<'EOF'
-          Automated ROM-free AArch64 / OpenGL ES 2.0 / SLJIT PortMaster build of **ProjectKagemaru** tuned for Anbernic RG34XX (Allwinner H700) and compatible ARM64 Linux handhelds.
+          FILES="dist/ProjectKagemaru-PortMaster-aarch64.zip dist/ProjectKagemaru-PortMaster-aarch64.zip.sha256 dist/ProjectKagemaru-Vulkan-aarch64.zip dist/ProjectKagemaru-Vulkan-aarch64.zip.sha256"
+          cat > dist/notes-tail.md <<'EOF'
+          Automated ROM-free AArch64 builds of **ProjectKagemaru**, tuned for Anbernic RG34XX (Allwinner H700) and compatible ARM64 Linux handhelds.
 
           ### Contents (Zero ROMs / Zero Game Code)
+          **`ProjectKagemaru-PortMaster-aarch64.zip`** — OpenGL ES 2.0 PortMaster package for the RG34XX/H700:
           - `Virtua Fighter.sh` (PortMaster launcher with `performance` CPU governor)
           - `projectkagemaru/vf1.aarch64` (ARM64 Cortex-A53, SLJIT ARM64 V60 JIT, Core 2 MultiPCM sound worker, OpenGL ES 2.0, ARM64 NEON, max `GLIBC_2.28`, statically linked `zlib` & `libc++`)
           - `projectkagemaru/assets/vf_map.txt` (V60 function/jump address map for on-device SLJIT recompilation)
           - `projectkagemaru/cover.jpg`, `gamecontrollerdb.txt` (includes Anbernic RG34XX mapping), PortMaster metadata, and licences
 
+          **`ProjectKagemaru-Vulkan-aarch64.zip`** — standalone Vulkan (`SDL_GPU` SPIR-V) runtime for ARM64 Linux devices with working Vulkan drivers:
+          - `Virtua Fighter Vulkan.sh` and `projectkagemaru-vulkan/vf1-vulkan.aarch64` (static SDL3 `SDL_GPU` + SPIR-V compute shaders, Dear ImGui `SDL_GPU3`, max `GLIBC_2.27`, zero `libstdc++.so` / `libSDL3.so` / `libz.so`; `libvulkan.so.1`, Wayland, X11 and audio load via `dlopen`)
+
           ### Quick Setup (BYOD)
-          1. Extract `ProjectKagemaru-PortMaster-aarch64.zip` into your handheld's `ports/` folder.
-          2. Copy your own legal MAME `vf.zip` (with `315-5724.bin`) into `ports/projectkagemaru/roms/vf.zip`.
+          1. Extract the package you need into your handheld's `ports/` folder.
+          2. Copy your own legal MAME `vf.zip` (with `315-5724.bin`) into `ports/projectkagemaru/roms/vf.zip` (or `ports/projectkagemaru-vulkan/roms/vf.zip`).
           3. Launch **Virtua Fighter** — SLJIT compiles the V60 program to native ARM64 automatically on startup (no PC pre-build required!).
           EOF
-          sed -i 's/^          //' dist/release-notes.md
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" $FILES --clobber
+          sed -i 's/^          //' dist/notes-tail.md
+          # Per-release highlights live in docs/release-notes/<tag>.md and are prepended to the
+          # notes every release shares, so publishing never depends on remembering to write one.
+          if [ -f "docs/release-notes/$TAG.md" ]; then
+            cat "docs/release-notes/$TAG.md" dist/notes-tail.md > dist/release-notes.md
           else
-            gh release create "$TAG" $FILES \
-              --title "ProjectKagemaru $TAG (ARM64 / Anbernic RG34XX PortMaster)" \
+            cat dist/notes-tail.md > dist/release-notes.md
+          fi
+          TITLE="ProjectKagemaru $TAG (ARM64 / Anbernic RG34XX PortMaster)"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            # Re-running on a tag that already has a release: replace the assets, then force
+            # the release back to published. Moving a tag (the way a release is rebuilt onto
+            # a new commit) can leave GitHub holding an orphaned release, and an upload alone
+            # would keep it invisible. --latest also matters, since a draft published later
+            # keeps an older created_at and would otherwise not outrank the previous release.
+            gh release upload "$TAG" $FILES --clobber
+            gh release edit "$TAG" --draft=false --latest --title "$TITLE" \
               --notes-file dist/release-notes.md
+          else
+            gh release create "$TAG" $FILES --title "$TITLE" \
+              --notes-file dist/release-notes.md --latest
           fi
