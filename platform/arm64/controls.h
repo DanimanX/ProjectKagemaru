@@ -2,7 +2,11 @@
 // compatible PortMaster Linux devices (with optional 2P USB/BT gamepad support).
 #pragma once
 
+#ifdef VF1_VULKAN
+#include <SDL3/SDL.h>
+#else
 #include <SDL.h>
+#endif
 #include <algorithm>
 #include <cstdint>
 #include <string>
@@ -113,6 +117,20 @@ public:
     ~PadManager() { close(); }
 
     void init(const std::string &data_dir) {
+#ifdef VF1_VULKAN
+        SDL_AddGamepadMapping(
+            "19000000010000000100000000010000,Anbernic RG34XX Controller,platform:Linux,"
+            "b:b3,a:b4,dpdown:h0.4,leftx:a0,lefty:a1,lefttrigger:b12,dpleft:h0.8,"
+            "rightshoulder:b8,leftshoulder:b7,righttrigger:b13,dpright:h0.2,"
+            "back:b9,start:b10,dpup:h0.1,y:b6,x:b5,guide:b11,");
+        const std::string db = data_dir + "/gamecontrollerdb.txt";
+        SDL_AddGamepadMappingsFromFile(db.c_str());
+        int njoy = 0;
+        if (SDL_JoystickID *ids = SDL_GetJoysticks(&njoy)) {
+            for (int i = 0; i < njoy; ++i) open_index(ids[i]);
+            SDL_free(ids);
+        }
+#else
         SDL_GameControllerAddMapping(
             "19000000010000000100000000010000,Anbernic RG34XX Controller,platform:Linux,"
             "b:b3,a:b4,dpdown:h0.4,leftx:a0,lefty:a1,lefttrigger:b12,dpleft:h0.8,"
@@ -121,9 +139,29 @@ public:
         const std::string db = data_dir + "/gamecontrollerdb.txt";
         SDL_GameControllerAddMappingsFromFile(db.c_str());
         for (int i = 0; i < SDL_NumJoysticks(); ++i) open_index(i);
+#endif
     }
 
     void handle_event(const SDL_Event &e) {
+#ifdef VF1_VULKAN
+        if (e.type == SDL_EVENT_GAMEPAD_ADDED) {
+            open_index(e.gdevice.which);
+        } else if (e.type == SDL_EVENT_GAMEPAD_REMOVED) {
+            for (int p = 0; p < 2; ++p) {
+                if (ctrl_[p] && SDL_GetGamepadID(ctrl_[p]) == e.gdevice.which) {
+                    SDL_CloseGamepad(ctrl_[p]);
+                    ctrl_[p] = nullptr;
+                }
+            }
+        } else if (e.type == SDL_EVENT_JOYSTICK_ADDED && !ctrl_[0] && !joy0_) {
+            open_index(e.jdevice.which);
+        } else if (e.type == SDL_EVENT_JOYSTICK_REMOVED) {
+            if (joy0_ && SDL_GetJoystickID(joy0_) == e.jdevice.which) {
+                SDL_CloseJoystick(joy0_);
+                joy0_ = nullptr;
+            }
+        }
+#else
         if (e.type == SDL_CONTROLLERDEVICEADDED) {
             open_index(e.cdevice.which);
         } else if (e.type == SDL_CONTROLLERDEVICEREMOVED) {
@@ -141,9 +179,14 @@ public:
                 joy0_ = nullptr;
             }
         }
+#endif
     }
 
+#ifdef VF1_VULKAN
+    uint32_t poll_player(int player, const bool *keys) const {
+#else
     uint32_t poll_player(int player, const uint8_t *keys) const {
+#endif
         uint32_t buttons = 0;
         if (player == 0 && keys) {
             if (keys[SDL_SCANCODE_UP]) buttons |= Up;
@@ -172,6 +215,50 @@ public:
             if (keys[SDL_SCANCODE_2]) buttons |= Start;
             if (keys[SDL_SCANCODE_6]) buttons |= Select;
         }
+#ifdef VF1_VULKAN
+        SDL_Gamepad *c = (player >= 0 && player < 2) ? ctrl_[player] : nullptr;
+        if (c) {
+            auto btn = [&](SDL_GamepadButton b) { return SDL_GetGamepadButton(c, b); };
+            if (btn(SDL_GAMEPAD_BUTTON_SOUTH)) buttons |= BtnA;
+            if (btn(SDL_GAMEPAD_BUTTON_EAST)) buttons |= BtnB;
+            if (btn(SDL_GAMEPAD_BUTTON_WEST)) buttons |= BtnX;
+            if (btn(SDL_GAMEPAD_BUTTON_NORTH)) buttons |= BtnY;
+            if (btn(SDL_GAMEPAD_BUTTON_DPAD_UP)) buttons |= Up;
+            if (btn(SDL_GAMEPAD_BUTTON_DPAD_DOWN)) buttons |= Down;
+            if (btn(SDL_GAMEPAD_BUTTON_DPAD_LEFT)) buttons |= Left;
+            if (btn(SDL_GAMEPAD_BUTTON_DPAD_RIGHT)) buttons |= Right;
+            if (btn(SDL_GAMEPAD_BUTTON_LEFT_SHOULDER)) buttons |= L1;
+            if (btn(SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER)) buttons |= R1;
+            if (btn(SDL_GAMEPAD_BUTTON_START)) buttons |= Start;
+            if (btn(SDL_GAMEPAD_BUTTON_BACK)) buttons |= Select;
+            if (btn(SDL_GAMEPAD_BUTTON_GUIDE)) buttons |= Guide;
+            const int dead = 8000;
+            const int lx = SDL_GetGamepadAxis(c, SDL_GAMEPAD_AXIS_LEFTX);
+            const int ly = SDL_GetGamepadAxis(c, SDL_GAMEPAD_AXIS_LEFTY);
+            if (lx < -dead) buttons |= Left;
+            if (lx > dead) buttons |= Right;
+            if (ly < -dead) buttons |= Up;
+            if (ly > dead) buttons |= Down;
+            if (SDL_GetGamepadAxis(c, SDL_GAMEPAD_AXIS_LEFT_TRIGGER) > 8000) buttons |= L2;
+            if (SDL_GetGamepadAxis(c, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) > 8000) buttons |= R2;
+        } else if (player == 0 && joy0_) {
+            const Uint8 hat = SDL_GetNumJoystickHats(joy0_) > 0 ? SDL_GetJoystickHat(joy0_, 0) : 0;
+            if (hat & SDL_HAT_UP) buttons |= Up;
+            if (hat & SDL_HAT_DOWN) buttons |= Down;
+            if (hat & SDL_HAT_LEFT) buttons |= Left;
+            if (hat & SDL_HAT_RIGHT) buttons |= Right;
+            const int dead = 8000;
+            if (SDL_GetNumJoystickAxes(joy0_) >= 2) {
+                const int lx = SDL_GetJoystickAxis(joy0_, 0);
+                const int ly = SDL_GetJoystickAxis(joy0_, 1);
+                if (lx < -dead) buttons |= Left;
+                if (lx > dead) buttons |= Right;
+                if (ly < -dead) buttons |= Up;
+                if (ly > dead) buttons |= Down;
+            }
+            const int nb = SDL_GetNumJoystickButtons(joy0_);
+            auto jb = [&](int idx) { return idx >= 0 && idx < nb && SDL_GetJoystickButton(joy0_, idx); };
+#else
         SDL_GameController *c = (player >= 0 && player < 2) ? ctrl_[player] : nullptr;
         if (c) {
             auto btn = [&](SDL_GameControllerButton b) { return SDL_GameControllerGetButton(c, b) != 0; };
@@ -222,6 +309,7 @@ public:
             }
             const int nb = SDL_JoystickNumButtons(joy0_);
             auto jb = [&](int idx) { return idx >= 0 && idx < nb && SDL_JoystickGetButton(joy0_, idx) != 0; };
+#endif
             if (jb(3)) buttons |= BtnB;
             if (jb(4)) buttons |= BtnA;
             if (jb(5)) buttons |= BtnX;
@@ -238,17 +326,52 @@ public:
     }
 
     void close() {
+#ifdef VF1_VULKAN
+        for (int p = 0; p < 2; ++p) {
+            if (ctrl_[p]) SDL_CloseGamepad(ctrl_[p]);
+            ctrl_[p] = nullptr;
+        }
+        if (joy0_) SDL_CloseJoystick(joy0_);
+        joy0_ = nullptr;
+#else
         for (int p = 0; p < 2; ++p) {
             if (ctrl_[p]) SDL_GameControllerClose(ctrl_[p]);
             ctrl_[p] = nullptr;
         }
         if (joy0_) SDL_JoystickClose(joy0_);
         joy0_ = nullptr;
+#endif
     }
 
     bool has_p2() const { return ctrl_[1] != nullptr; }
 
 private:
+#ifdef VF1_VULKAN
+    void open_index(SDL_JoystickID id) {
+        if (SDL_IsGamepad(id)) {
+            SDL_Gamepad *c = SDL_OpenGamepad(id);
+            if (!c) return;
+            for (int p = 0; p < 2; ++p) {
+                if (ctrl_[p] && SDL_GetGamepadID(ctrl_[p]) == id) {
+                    SDL_CloseGamepad(c);
+                    return;
+                }
+            }
+            if (!ctrl_[0]) {
+                ctrl_[0] = c;
+                if (joy0_) { SDL_CloseJoystick(joy0_); joy0_ = nullptr; }
+            } else if (!ctrl_[1]) {
+                ctrl_[1] = c;
+            } else {
+                SDL_CloseGamepad(c);
+            }
+            return;
+        }
+        if (!ctrl_[0] && !joy0_) joy0_ = SDL_OpenJoystick(id);
+    }
+
+    SDL_Gamepad *ctrl_[2] = {nullptr, nullptr};
+#else
     void open_index(int index) {
         if (SDL_IsGameController(index)) {
             SDL_GameController *c = SDL_GameControllerOpen(index);
@@ -287,6 +410,7 @@ private:
     }
 
     SDL_GameController *ctrl_[2] = {nullptr, nullptr};
+#endif
     SDL_Joystick *joy0_ = nullptr;
 };
 

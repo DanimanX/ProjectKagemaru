@@ -2,6 +2,7 @@
 roms/
 build/
 build-arm64/
+build-arm64-vulkan/
 build-host-arm64/
 deps/
 extern/

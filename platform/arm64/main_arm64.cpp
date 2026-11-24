@@ -10,8 +10,15 @@
 
 #include "audio.h"
 #include "controls.h"
+#ifdef VF1_VULKAN
+#include "gpu_vulkan.h"
+#include "imgui_vulkan.h"
+#include <SDL3/SDL.h>
+#else
 #include "gpu_gles.h"
 #include "imgui_gles.h"
+#include <SDL.h>
+#endif
 #include "sound_worker.h"
 #include "thread_affinity.h"
 
@@ -22,7 +29,6 @@
 #include "rt/native.h"
 #include "rt/rec_rt.h"
 
-#include <SDL.h>
 #include <algorithm>
 #include <atomic>
 #include <cerrno>
@@ -347,6 +353,7 @@ struct CliOptions {
     bool arcade = false;
     int bench_frames = 0;
     int bench_synthetic = 0;
+    int max_frames = 0;
 };
 
 void print_usage(const char *prog) {
@@ -612,6 +619,7 @@ int main(int argc, char **argv) {
         else if (a == "--arcade") cli.arcade = true;
         else if (a == "--bench-frames" && i + 1 < argc) cli.bench_frames = std::max(1, std::atoi(argv[++i]));
         else if (a == "--bench-synthetic" && i + 1 < argc) cli.bench_synthetic = std::max(1, std::atoi(argv[++i]));
+        else if (a == "--max-frames" && i + 1 < argc) cli.max_frames = std::max(1, std::atoi(argv[++i]));
     }
 
     arm64::pin_current_thread(kMainCore);
@@ -638,8 +646,12 @@ int main(int argc, char **argv) {
     if (cli.show_fps) cfg.show_fps = true;
     if (cli.arcade) { cfg.free_play = false; cfg.fast_boot = false; }
 
+#ifdef VF1_VULKAN
+    if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMEPAD | SDL_INIT_JOYSTICK)) {
+#else
     SDL_SetMainReady();
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMECONTROLLER | SDL_INIT_JOYSTICK) != 0) {
+#endif
         std::fprintf(stderr, "SDL_Init failed: %s\n", SDL_GetError());
         return 1;
     }
@@ -682,10 +694,18 @@ int main(int argc, char **argv) {
         while (!quit) {
             SDL_Event e;
             while (SDL_PollEvent(&e)) {
+#ifdef VF1_VULKAN
+                arm64::gl_process_event(e);
+                if (e.type == SDL_EVENT_QUIT) quit = true;
+                else if (e.type == SDL_EVENT_KEY_DOWN && (e.key.key == SDLK_ESCAPE || e.key.key == SDLK_RETURN)) quit = true;
+                else if (e.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED) arm64::gl_update_drawable_size();
+                else pads.handle_event(e);
+#else
                 if (e.type == SDL_QUIT) quit = true;
                 else if (e.type == SDL_KEYDOWN && (e.key.keysym.sym == SDLK_ESCAPE || e.key.keysym.sym == SDLK_RETURN)) quit = true;
                 else if (e.type == SDL_WINDOWEVENT && e.window.event == SDL_WINDOWEVENT_SIZE_CHANGED) arm64::gl_update_drawable_size();
                 else pads.handle_event(e);
+#endif
             }
             const uint32_t b0 = pads.poll_player(0, SDL_GetKeyboardState(nullptr));
             if (b0 & (arm64::BtnA | arm64::BtnB | arm64::Start | arm64::Guide)) quit = true;
@@ -727,7 +747,11 @@ int main(int argc, char **argv) {
     std::unique_ptr<model1> game = std::make_unique<model1>(std::move(roms.regions));
     arm64::GlesPolyCollector collector;
     arm64::GlesPolyCollector *poly_col = &collector;
+#ifdef VF1_VULKAN
+    game->set_gpu3d(gpu.gpu3d_ptr() ? gpu.gpu3d_ptr() : static_cast<gpu3d *>(poly_col));
+#else
     game->set_gpu3d(poly_col);
+#endif
     game->set_gpu3d_target(true);
     game->set_smooth(true);
     game->set_parts_mode(true);
@@ -854,16 +878,25 @@ int main(int argc, char **argv) {
     double sum_emu_ms = 0.0, sum_snd_ms = 0.0, sum_parts_ms = 0.0, sum_gles_ms = 0.0, sum_swap_ms = 0.0;
     double sum_polys = 0.0, sum_batches = 0.0;
 
+    int total_frames = 0;
     while (running) {
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
+#ifdef VF1_VULKAN
+            arm64::gl_process_event(e);
+            if (e.type == SDL_EVENT_QUIT) running = false;
+            else if (e.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED)
+                arm64::gl_update_drawable_size();
+            else pads.handle_event(e);
+#else
             if (e.type == SDL_QUIT) running = false;
             else if (e.type == SDL_WINDOWEVENT && e.window.event == SDL_WINDOWEVENT_SIZE_CHANGED)
                 arm64::gl_update_drawable_size();
             else pads.handle_event(e);
+#endif
         }
 
-        const uint8_t *keys = SDL_GetKeyboardState(nullptr);
+        const auto *keys = SDL_GetKeyboardState(nullptr);
         const uint32_t p0_btns = pads.poll_player(0, keys);
         const uint32_t p1_btns = pads.poll_player(1, keys);
 
@@ -971,6 +1004,8 @@ int main(int argc, char **argv) {
 
             ++fps_frames;
             ++log_frames;
+            ++total_frames;
+            if (cli.max_frames > 0 && total_frames >= cli.max_frames) running = false;
             sum_emu_ms += last_emu_ms;
             sum_snd_ms += sound_worker.last_work_ms();
             sum_parts_ms += last_parts_ms;

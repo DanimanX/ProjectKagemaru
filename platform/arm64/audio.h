@@ -2,7 +2,11 @@
 // Smoothly absorbs 57.524 Hz <-> 60 Hz pacing differences without crackles.
 #pragma once
 
+#ifdef VF1_VULKAN
+#include <SDL3/SDL.h>
+#else
 #include <SDL.h>
+#endif
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -99,6 +103,19 @@ public:
 
     bool open(int source_rate = 48000) {
         source_rate_ = source_rate;
+#ifdef VF1_VULKAN
+        SDL_AudioSpec want{SDL_AUDIO_S16, 2, 48000};
+        dev_stream_ = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &want, sdl3_callback, this);
+        if (!dev_stream_) return false;
+        rate_ = 48000;
+        SDL_AudioSpec src_spec{SDL_AUDIO_S16, 2, source_rate_};
+        stream_ = SDL_CreateAudioStream(&src_spec, &src_spec);
+        if (!stream_) { close(); return false; }
+        SDL_LockAudioStream(dev_stream_);
+        restart_locked();
+        SDL_UnlockAudioStream(dev_stream_);
+        return true;
+#else
         SDL_AudioSpec want{}, got{};
         want.freq = 48000;
         want.format = AUDIO_S16SYS;
@@ -113,9 +130,26 @@ public:
         if (!stream_) { close(); return false; }
         restart_locked();
         return true;
+#endif
     }
 
     void push(const int16_t *samples, size_t count) {
+#ifdef VF1_VULKAN
+        if (!dev_stream_ || !stream_ || !samples || !count) return;
+        SDL_LockAudioStream(dev_stream_);
+        const int max_bytes = rate_ * kFrameBytes / 4;
+        if (SDL_GetAudioStreamAvailable(stream_) > max_bytes) {
+            SDL_ClearAudioStream(stream_);
+        }
+        SDL_PutAudioStreamData(stream_, samples, int(count * sizeof(int16_t)));
+        const int prime = AudioRate::kPrimeFrames * kFrameBytes;
+        const bool ready = SDL_GetAudioStreamAvailable(stream_) >= prime;
+        SDL_UnlockAudioStream(dev_stream_);
+        if (!playing_ && ready) {
+            SDL_ResumeAudioStreamDevice(dev_stream_);
+            playing_ = true;
+        }
+#else
         if (!device_ || !stream_ || !samples || !count) return;
         SDL_LockAudioDevice(device_);
         const int max_bytes = rate_ * kFrameBytes / 4; // cap at 250 ms
@@ -130,9 +164,19 @@ public:
             SDL_PauseAudioDevice(device_, 0);
             playing_ = true;
         }
+#endif
     }
 
     void pause() {
+#ifdef VF1_VULKAN
+        if (!dev_stream_) return;
+        SDL_PauseAudioStreamDevice(dev_stream_);
+        SDL_LockAudioStream(dev_stream_);
+        if (stream_) SDL_ClearAudioStream(stream_);
+        restart_locked();
+        SDL_UnlockAudioStream(dev_stream_);
+        playing_ = false;
+#else
         if (!device_) return;
         SDL_PauseAudioDevice(device_, 1);
         SDL_LockAudioDevice(device_);
@@ -140,18 +184,36 @@ public:
         restart_locked();
         SDL_UnlockAudioDevice(device_);
         playing_ = false;
+#endif
     }
 
     int queued_frames() {
+#ifdef VF1_VULKAN
+        if (!dev_stream_) return 0;
+        SDL_LockAudioStream(dev_stream_);
+        const int q = queued_frames_locked();
+        SDL_UnlockAudioStream(dev_stream_);
+        return q;
+#else
         if (!device_) return 0;
         SDL_LockAudioDevice(device_);
         const int q = queued_frames_locked();
         SDL_UnlockAudioDevice(device_);
         return q;
+#endif
     }
 
     Stats stats() {
         Stats out;
+#ifdef VF1_VULKAN
+        if (!dev_stream_) return out;
+        SDL_LockAudioStream(dev_stream_);
+        out.underruns = underruns_;
+        out.ratio = rate_control_.ratio();
+        out.queued_ms = rate_control_.average() * 1000.0 / double(rate_);
+        SDL_UnlockAudioStream(dev_stream_);
+        return out;
+#else
         if (!device_) return out;
         SDL_LockAudioDevice(device_);
         out.underruns = underruns_;
@@ -159,26 +221,47 @@ public:
         out.queued_ms = rate_control_.average() * 1000.0 / double(rate_);
         SDL_UnlockAudioDevice(device_);
         return out;
+#endif
     }
 
     void volume(float value) {
+#ifdef VF1_VULKAN
+        if (dev_stream_) SDL_LockAudioStream(dev_stream_);
+        volume_ = std::clamp(value, 0.0f, 1.0f);
+        if (dev_stream_) SDL_UnlockAudioStream(dev_stream_);
+#else
         if (device_) SDL_LockAudioDevice(device_);
         volume_ = std::clamp(value, 0.0f, 1.0f);
         if (device_) SDL_UnlockAudioDevice(device_);
+#endif
     }
 
     void mute(bool muted) {
+#ifdef VF1_VULKAN
+        if (dev_stream_) SDL_LockAudioStream(dev_stream_);
+        muted_ = muted;
+        if (dev_stream_) SDL_UnlockAudioStream(dev_stream_);
+#else
         if (device_) SDL_LockAudioDevice(device_);
         muted_ = muted;
         if (device_) SDL_UnlockAudioDevice(device_);
+#endif
     }
 
     void close() {
+#ifdef VF1_VULKAN
+        if (dev_stream_) SDL_DestroyAudioStream(dev_stream_);
+        dev_stream_ = nullptr;
+        if (stream_) SDL_DestroyAudioStream(stream_);
+        stream_ = nullptr;
+        playing_ = false;
+#else
         if (device_) SDL_CloseAudioDevice(device_);
         device_ = 0;
         if (stream_) SDL_FreeAudioStream(stream_);
         stream_ = nullptr;
         playing_ = false;
+#endif
     }
 
 private:
@@ -191,8 +274,26 @@ private:
         resampler_.reset();
     }
     int queued_frames_locked() const {
+#ifdef VF1_VULKAN
+        return stream_ ? SDL_GetAudioStreamAvailable(stream_) / kFrameBytes : 0;
+#else
         return stream_ ? SDL_AudioStreamAvailable(stream_) / kFrameBytes : 0;
+#endif
     }
+
+#ifdef VF1_VULKAN
+    static void SDLCALL sdl3_callback(void *userdata, SDL_AudioStream *astream, int additional_amount, int /*total_amount*/) {
+        if (additional_amount <= 0) return;
+        Uint8 buf[kChunk * kFrameBytes];
+        int rem = additional_amount;
+        while (rem > 0) {
+            const int n = std::min(rem, int(sizeof(buf)));
+            callback(userdata, buf, n);
+            SDL_PutAudioStreamData(astream, buf, n);
+            rem -= n;
+        }
+    }
+#endif
 
     static void callback(void *userdata, Uint8 *buffer, int bytes) {
         auto &self = *static_cast<Audio *>(userdata);
@@ -215,7 +316,11 @@ private:
                 got = std::min(queued, kMaxInput);
             }
             if (got > 0) {
+#ifdef VF1_VULKAN
+                SDL_GetAudioStreamData(self.stream_, self.in_buf_, got * kFrameBytes);
+#else
                 SDL_AudioStreamGet(self.stream_, self.in_buf_, got * kFrameBytes);
+#endif
             }
             queued -= got;
             self.resampler_.run(self.in_buf_, got, self.mixed_, n, ratio);
@@ -229,7 +334,11 @@ private:
         }
     }
 
+#ifdef VF1_VULKAN
+    SDL_AudioStream *dev_stream_ = nullptr;
+#else
     SDL_AudioDeviceID device_ = 0;
+#endif
     SDL_AudioStream *stream_ = nullptr;
     int source_rate_ = 48000;
     int rate_ = 48000;
